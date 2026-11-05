@@ -231,7 +231,7 @@ const fmt2=n=>'$'+n.toLocaleString('es-MX',{minimumFractionDigits:2,maximumFract
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 /* ---------- servidor ---------- */
-const API='__API__';
+const API='https://facturas-production-0558.up.railway.app';
 const CLIENT_ID='634352012698-b47t3ed3tvd4d1g7l30l68bd6e5s0ri4.apps.googleusercontent.com';
 let ID_TOKEN=null,STATUS=null;
 function decodeJWT(t){try{return JSON.parse(decodeURIComponent(escape(atob(t.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')))))}catch(e){return null}}
