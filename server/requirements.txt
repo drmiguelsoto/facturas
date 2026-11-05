@@ -1,0 +1,8 @@
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+python-multipart==0.0.20
+cfdiclient==2.0.0
+cryptography>=44
+google-auth==2.37.0
+requests>=2.32
+lxml>=5.3
