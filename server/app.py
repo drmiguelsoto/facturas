@@ -263,9 +263,11 @@ def guardar_metadata_zip(data: bytes):
 
 # ---------------------------------------------------------------- e.firma cifrada
 def _fernet():
-    if not MASTER_KEY:
-        raise HTTPException(500, "Falta la variable MASTER_KEY en el servidor.")
-    return Fernet(MASTER_KEY.encode())
+    if len(MASTER_KEY) < 16:
+        raise HTTPException(500, "Falta la variable MASTER_KEY (mínimo 16 caracteres) en el servidor.")
+    import hashlib
+    # MASTER_KEY puede ser cualquier frase larga; se deriva una llave Fernet de 32 bytes.
+    return Fernet(base64.urlsafe_b64encode(hashlib.sha256(MASTER_KEY.encode()).digest()))
 
 
 def fiel_info_de_cer(cer_der: bytes):
