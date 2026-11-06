@@ -73,6 +73,18 @@ tr:hover td{background:#FBFAF9}
 .note{font-size:12.5px;color:var(--muted);margin-top:10px}
 footer{color:var(--muted);font-size:12px;text-align:center;padding:20px}
 .hidden{display:none!important}
+.vbox{border:1.5px dashed var(--taupe);background:var(--paper);padding:30px 20px;text-align:center;cursor:pointer;margin-bottom:16px}
+.vbox.over{background:#EFEAE5}.vbox h2{font:500 24px 'Cormorant Garamond',serif;margin:0 0 4px}.vbox p{margin:0;color:var(--muted)}
+.vres{background:var(--paper);border:1px solid var(--line);margin-bottom:14px}
+.vhead{padding:16px 20px;display:flex;gap:16px;align-items:center;flex-wrap:wrap;border-bottom:1px solid var(--line)}
+.vhead .ver{font:500 24px 'Cormorant Garamond',serif}
+.vhead.ok{border-left:6px solid var(--green)}.vhead.warn{border-left:6px solid var(--amber)}.vhead.pend{border-left:6px solid var(--amber)}.vhead.bad{border-left:6px solid var(--red)}
+.vhead.ok .ver{color:var(--green)}.vhead.bad .ver{color:var(--red)}.vhead.warn .ver,.vhead.pend .ver{color:var(--amber)}
+.vmeta{font-size:13px;color:var(--muted)}.vtot{margin-left:auto;font:500 26px 'Cormorant Garamond',serif}
+.vlist{padding:8px 20px 14px}.vitem{display:flex;gap:10px;padding:7px 0;border-bottom:1px solid #F3F0ED;font-size:14px}
+.vitem:last-child{border:0}.vicon{width:22px;flex:none;font-weight:600;text-align:center}
+.vitem.ok .vicon{color:var(--green)}.vitem.bad .vicon{color:var(--red)}.vitem.warn .vicon,.vitem.pend .vicon{color:var(--amber)}.vitem.info .vicon{color:var(--muted)}
+.vitem small{display:block;color:var(--muted);font-size:12.5px}
 .gate{max-width:440px;margin:80px auto;background:var(--paper);border:1px solid var(--line);padding:34px 30px;text-align:center}
 .gate h2{font:500 30px 'Cormorant Garamond',serif;margin:0 0 6px}.gate p{color:var(--muted);margin:0 0 20px}
 .gate #gbtn{display:inline-block}.gate .err{color:var(--red);font-size:13px;margin-top:14px}
@@ -146,14 +158,24 @@ details.manual{margin-top:10px}details.manual summary{cursor:pointer;color:var(-
     <div class="kpis" id="kpis"></div>
 
     <div class="tabs" id="tabs">
-      <button class="tab on" data-p="resumen">Resumen mensual</button>
+      <button class="tab on" data-p="verificar">Verificar antes de pagar</button>
+      <button class="tab" data-p="resumen">Resumen mensual</button>
       <button class="tab" data-p="fugas">Fugas <span class="n" id="nFugas">0</span></button>
       <button class="tab" data-p="prov">Proveedores a corregir</button>
       <button class="tab" data-p="cobros">Cobros PPD pendientes</button>
       <button class="tab" data-p="todas">Todas las facturas</button>
     </div>
 
-    <div class="panel on" id="p-resumen">
+    <div class="panel on" id="p-verificar">
+      <div class="vbox" id="vdrop">
+        <h2>Suelta aquí el XML de la factura que te piden pagar</h2>
+        <p>Tu servidor le pregunta al SAT si existe y está vigente, revisa la lista negra 69-B y que esté bien hecha para deducirla.</p>
+        <input type="file" id="vfile" multiple accept=".xml,.zip,.pdf" class="hidden">
+      </div>
+      <div id="vout"></div>
+    </div>
+
+    <div class="panel" id="p-resumen">
       <div class="card">
         <h3>Ingresos facturados contra gastos deducibles</h3>
         <p class="sub">Base sin IVA (subtotal − descuento). Gastos netos de notas de crédito.</p>
@@ -377,7 +399,6 @@ function analyze(){
 /* ---------- render ---------- */
 let A=null;
 function render(){
-  if(!DATA.length){$('#dash').classList.add('hidden');return}
   $('#dash').classList.remove('hidden');
   A=analyze();
   const t=A.mes.reduce((s,m)=>({ing:s.ing+m.ing,ded:s.ded+m.ded,leak:s.leak+m.leak,pers:s.pers+m.pers}),{ing:0,ded:0,leak:0,pers:0});
@@ -448,6 +469,29 @@ function renderTodas(){
     return `<tr><td>${x.fecha}</td><td><span class="tag ${rec?'t-gry':'t-grn'}">${rec?'Recibida':'Emitida'}</span></td><td>${x.tipo}${x.metodo?' · '+x.metodo:''}</td><td><b>${esc(rec?x.emNom:x.rcNom)}</b><br><span class="uuid">${rec?x.emRfc:x.rcRfc} · ${x.uuid}</span><div style="font-size:12px;color:var(--muted);max-width:340px">${esc(x.conceptos)}</div></td><td>${x.uso}${x.uso&&USO[x.uso]?'<br><span class="uuid">'+USO[x.uso]+'</span>':''}<br><span class="uuid">${x.rcReg}</span></td><td>${st}</td><td class="num">${fmt2(x.total)}</td></tr>`}).join('')}</tbody>`;
   $('#aCount').textContent=`${rows.length} comprobantes${rows.length>400?' · se muestran los 400 más recientes; usa los filtros':''}`;
 }
+
+/* ---------- verificar antes de pagar ---------- */
+const ICON={ok:'✓',bad:'✕',warn:'!',pend:'?',info:'i'};
+async function verificar(files){
+  const ok=[...files];if(!ok.length)return;
+  $('#vout').innerHTML='<div class="card">Consultando al SAT…</div>';
+  const fd=new FormData();ok.forEach(f=>fd.append('files',f));
+  try{const r=await api('/api/verificar',{method:'POST',body:fd});
+    $('#vout').innerHTML=r.map(v=>{
+      if(!v.ok)return `<div class="vres"><div class="vhead bad"><span class="ver">${esc(v.error)}</span><span class="vmeta">${esc(v.archivo)}</span></div></div>`;
+      const c=v.cfdi;
+      return `<div class="vres"><div class="vhead ${v.nivel}"><div><div class="ver">${esc(v.veredicto)}</div>
+        <div class="vmeta"><b>${esc(c.emNom)}</b> · ${c.emRfc} · ${c.fecha} · Folio ${esc(c.serie+c.folio)}</div>
+        <div class="vmeta">${esc(c.conceptos)}</div></div><div class="vtot">${fmt2(c.total)}</div></div>
+        <div class="vlist">${v.checks.map(k=>`<div class="vitem ${k.nivel}"><span class="vicon">${ICON[k.nivel]}</span><div>${esc(k.titulo)}${k.detalle?`<small>${esc(k.detalle)}</small>`:''}</div></div>`).join('')}
+        <div class="vmeta" style="margin-top:8px">Folio fiscal: <span class="uuid">${c.uuid}</span></div></div></div>`}).join('');
+  }catch(e){$('#vout').innerHTML=`<div class="card" style="color:var(--red)">${esc(e.message)}</div>`}
+}
+const vdrop=$('#vdrop'),vfile=$('#vfile');
+vdrop.onclick=()=>vfile.click();vfile.onchange=()=>{verificar(vfile.files);vfile.value=''};
+['dragenter','dragover'].forEach(e=>vdrop.addEventListener(e,ev=>{ev.preventDefault();vdrop.classList.add('over')}));
+['dragleave','drop'].forEach(e=>vdrop.addEventListener(e,ev=>{ev.preventDefault();vdrop.classList.remove('over')}));
+vdrop.addEventListener('drop',ev=>verificar(ev.dataTransfer.files));
 
 /* ---------- eventos ---------- */
 const drop=$('#drop'),file=$('#file');

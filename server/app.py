@@ -588,3 +588,193 @@ def sync_ahora(email=Depends(usuario)):
         raise HTTPException(400, "Primero carga la e.firma.")
     threading.Thread(target=ciclo, kwargs={"forzar_diario": True}, daemon=True).start()
     return {"ok": True, "mensaje": "Solicitud enviada al SAT. Las facturas llegan en minutos u horas, según el SAT."}
+
+
+# ---------------------------------------------------------------- verificar antes de pagar
+LISTA_69B_URL = os.environ.get(
+    "LISTA_69B_URL", "http://omawww.sat.gob.mx/cifras_sat/Documents/Listado_Completo_69-B.csv"
+)
+LISTA_69B_PATH = os.path.join(DATA_DIR, "lista69b.json")
+_69b_lock = threading.Lock()
+_69b_mem = {"fecha": None, "rfcs": {}}
+
+
+def lista_69b():
+    """Lista 69-B (EFOS) del SAT, cacheada 24 h en el volumen. Devuelve (dict rfc->situacion, fecha)."""
+    import requests
+    with _69b_lock:
+        if not _69b_mem["fecha"] and os.path.exists(LISTA_69B_PATH):
+            try:
+                _69b_mem.update(json.load(open(LISTA_69B_PATH)))
+            except Exception:
+                pass
+        fresca = _69b_mem["fecha"] and (dt.datetime.now(TZ) - dt.datetime.fromisoformat(_69b_mem["fecha"])).total_seconds() < 86400
+        if fresca:
+            return _69b_mem["rfcs"], _69b_mem["fecha"]
+        try:
+            r = requests.get(LISTA_69B_URL, timeout=60)
+            r.raise_for_status()
+            txt = r.content.decode("latin-1")
+            rfcs = {}
+            col_rfc = col_sit = None
+            for line in txt.splitlines():
+                cols = [c.strip().strip('"') for c in line.split(",")]
+                low = [c.lower() for c in cols]
+                if col_rfc is None:
+                    if "rfc" in low:
+                        col_rfc = low.index("rfc")
+                        col_sit = next((i for i, c in enumerate(low) if c.startswith("situaci")), None)
+                    continue
+                if len(cols) > col_rfc and len(cols[col_rfc]) in (12, 13):
+                    rfcs[cols[col_rfc].upper()] = cols[col_sit] if col_sit is not None and col_sit < len(cols) else "En lista"
+            if len(rfcs) > 1000:
+                _69b_mem.update({"fecha": now_iso(), "rfcs": rfcs})
+                json.dump(_69b_mem, open(LISTA_69B_PATH, "w"))
+                evento(f"Lista 69-B del SAT actualizada ({len(rfcs)} RFC).")
+            else:
+                evento("La lista 69-B descargada vino incompleta; se conserva la anterior.", "warn")
+        except Exception as e:
+            evento(f"No se pudo descargar la lista 69-B: {e}", "warn")
+        return _69b_mem["rfcs"], _69b_mem["fecha"]
+
+
+def consulta_estado_sat(rfc_emisor, rfc_receptor, total_str, uuid):
+    """Servicio público de verificación de CFDI del SAT (el mismo del código QR)."""
+    import requests
+    from xml.sax.saxutils import escape
+    expr = f"?re={escape(rfc_emisor)}&rr={escape(rfc_receptor)}&tt={escape(total_str)}&id={escape(uuid)}"
+    body = ('<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:tem="http://tempuri.org/">'
+            '<soapenv:Header/><soapenv:Body><tem:Consulta><tem:expresionImpresa><![CDATA[' + expr +
+            ']]></tem:expresionImpresa></tem:Consulta></soapenv:Body></soapenv:Envelope>')
+    r = requests.post(
+        "https://consultaqr.facturaelectronica.sat.gob.mx/ConsultaCFDIService.svc", data=body.encode(),
+        headers={"Content-Type": 'text/xml;charset="utf-8"', "SOAPAction": "http://tempuri.org/IConsultaCFDIService/Consulta"},
+        timeout=30,
+    )
+    r.raise_for_status()
+    root = etree.fromstring(r.content)
+    out = {}
+    for el in root.iter():
+        if isinstance(el.tag, str) and _ln(el) in ("CodigoEstatus", "Estado", "EsCancelable", "EstatusCancelacion", "ValidacionEFOS"):
+            out[_ln(el)] = (el.text or "").strip()
+    return out
+
+
+def verificar_xml(raw: bytes, rfc_mio: str):
+    d = parse_cfdi(raw)
+    if not d:
+        return {"ok": False, "error": "No es un XML de factura (CFDI) válido. Necesito el .xml, no el PDF."}
+    root = etree.fromstring(raw[raw.find(b"<"):])
+    total_str = root.get("Total") or str(d["total"])
+    checks = []
+
+    def chk(nivel, titulo, detalle=""):
+        checks.append({"nivel": nivel, "titulo": titulo, "detalle": detalle})
+
+    # 1) ¿Existe en el SAT y está vigente?
+    sat = None
+    try:
+        sat = consulta_estado_sat(d["emRfc"], d["rcRfc"], total_str, d["uuid"])
+        est = (sat.get("Estado") or "").lower()
+        if est == "vigente":
+            chk("ok", "Registrada en el SAT y vigente", sat.get("CodigoEstatus", ""))
+        elif est == "cancelado":
+            chk("bad", "El SAT la reporta CANCELADA", "No la pagues: pide al proveedor la factura que la sustituye.")
+        else:
+            chk("pend", "El SAT todavía no la encuentra",
+                "Si se timbró hace poco puede tardar hasta 72 h en aparecer. Si pasan más de 3 días, es falsa o tiene datos alterados.")
+    except Exception as e:
+        chk("pend", "No se pudo consultar al SAT en este momento", f"Intenta de nuevo en unos minutos. ({e})")
+
+    # 2) Lista negra 69-B
+    rfcs69, fecha69 = lista_69b()
+    sit = rfcs69.get(d["emRfc"])
+    if sit:
+        s = sit.lower()
+        if "desvirt" in s or "favorable" in s:
+            chk("warn", f"El proveedor estuvo en la lista 69-B ({sit})", "Salió de la lista; normalmente sí es deducible. Confírmalo con tu contador.")
+        else:
+            chk("bad", f"Proveedor en la lista negra 69-B del SAT: {sit}",
+                "Facturas de empresas fantasma (EFOS): no son deducibles y te pueden generar problemas con el SAT. No pagues sin hablar con tu contador.")
+    elif fecha69:
+        chk("ok", "El proveedor no está en la lista negra 69-B", f"Lista del SAT consultada el {fecha69[:10]}.")
+    else:
+        chk("pend", "No se pudo revisar la lista 69-B del SAT", "Intenta de nuevo más tarde.")
+
+    # 3) A quién está facturada
+    if rfc_mio and d["rcRfc"] != rfc_mio:
+        chk("bad", f"Está facturada a otro RFC ({d['rcRfc']})", f"Tu RFC es {rfc_mio}. Pide que la refacturen a tu nombre.")
+    else:
+        chk("ok", "Facturada a tu RFC", d["rcRfc"])
+    if d["rcReg"] and d["rcReg"] not in ("612", "626"):
+        chk("bad", f"Régimen equivocado ({d['rcReg']})", "Debe ir a tu régimen 612 (actividades empresariales y profesionales). Pide que la refacturen.")
+    else:
+        chk("ok", "Régimen correcto", d["rcReg"] or "")
+
+    # 4) Uso del CFDI
+    uso = d["uso"] or ""
+    if uso == "S01":
+        chk("bad", "Uso S01: sin efectos fiscales", "Así NO es deducible. Pide que la refacturen con uso G03.")
+    elif re_uso_ok(uso):
+        chk("ok", f"Uso {uso} deducible para tu actividad", "")
+    elif uso.startswith("D"):
+        chk("warn", f"Uso {uso}: deducción personal", "Sirve en tu declaración anual, no como gasto del consultorio. Si es gasto del consultorio, pide uso G03.")
+    else:
+        chk("warn", f"Uso {uso} poco común", "Confírmalo con tu contador.")
+
+    # 5) Forma y método de pago
+    if d["forma"] == "01" and d["total"] > 2000:
+        chk("bad", "Dice pago en EFECTIVO por más de $2,000", "Así no es deducible. Paga por transferencia o tarjeta y pide que la factura lo diga.")
+    if d["metodo"] == "PUE":
+        mes = d["fecha"][:7]
+        chk("info" if mes == dt.datetime.now(TZ).strftime("%Y-%m") else "bad",
+            "Pago en una sola exhibición (PUE)",
+            f"Págala dentro del mismo mes en que se emitió ({mes}). Si la pagas después, debió venir en PPD con complemento de pago.")
+    elif d["metodo"] == "PPD":
+        chk("warn", "Pago en parcialidades o diferido (PPD)",
+            "Después de pagar, el proveedor DEBE mandarte el complemento de pago; sin él no es deducible.")
+
+    # 6) ¿Ya la tenemos?
+    with db() as c:
+        ya = c.execute("SELECT origen, creado FROM cfdi WHERE uuid=?", (d["uuid"],)).fetchone()
+    if ya:
+        chk("ok", "Ya está en tu sistema", f"Descargada el {ya['creado'][:10]}.")
+
+    niveles = {x["nivel"] for x in checks}
+    peor = next((n for n in ("bad", "pend", "warn") if n in niveles), "ok")
+    veredicto = {"ok": "Puedes pagarla", "warn": "Puedes pagarla, con las precauciones marcadas",
+                 "pend": "Falta confirmar con el SAT: vuelve a verificar antes de pagar",
+                 "bad": "No la pagues todavía"}[peor]
+    return {"ok": True, "veredicto": veredicto, "nivel": peor, "cfdi": d, "sat": sat, "checks": checks}
+
+
+def re_uso_ok(uso):
+    import re
+    return bool(re.match(r"^(G0[1-3]|I0[1-8])$", uso or ""))
+
+
+@app.post("/api/verificar")
+async def verificar(files: list[UploadFile] = File(...), email=Depends(usuario)):
+    _, info = cargar_fiel()
+    rfc = info["rfc"] if info else ""
+    res = []
+    for f in files:
+        data = await f.read()
+        name = (f.filename or "").lower()
+        if name.endswith(".zip"):
+            try:
+                blobs = list(xmls_de_zip(data))
+            except zipfile.BadZipFile:
+                res.append({"ok": False, "archivo": f.filename, "error": "ZIP dañado."})
+                continue
+        elif name.endswith(".pdf"):
+            res.append({"ok": False, "archivo": f.filename, "error": "Es el PDF. Para verificar necesito el archivo .xml de la factura."})
+            continue
+        else:
+            blobs = [data]
+        for b in blobs:
+            r = verificar_xml(b, rfc)
+            r["archivo"] = f.filename
+            res.append(r)
+    evento(f"{email} verificó {len(res)} factura(s) antes de pagar.")
+    return res
