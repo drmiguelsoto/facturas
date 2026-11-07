@@ -54,7 +54,7 @@ ALLOWED_EMAILS = {
     e.strip().lower()
     for e in os.environ.get(
         "ALLOWED_EMAILS",
-        "miguelitosotomd@gmail.com,miguelsotomd@gmail.com,miguelsotouniverse@gmail.com",
+        "miguelitosotomd@gmail.com,miguelsotomd@gmail.com,miguelsotouniverse@gmail.com,miguelsotoadmi@gmail.com",
     ).split(",")
     if e.strip()
 }
