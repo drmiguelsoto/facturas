@@ -73,6 +73,22 @@ tr:hover td{background:#FBFAF9}
 .note{font-size:12.5px;color:var(--muted);margin-top:10px}
 footer{color:var(--muted);font-size:12px;text-align:center;padding:20px}
 .hidden{display:none!important}
+.pbar{display:flex;gap:10px;flex-wrap:wrap;align-items:end;background:var(--paper);border:1px solid var(--line);padding:14px 16px;margin-bottom:14px}
+.pbar label{display:block;font-size:11px;letter-spacing:1.3px;text-transform:uppercase;color:var(--muted);margin-bottom:3px}
+.pbar select,.pbar input,.pform input,.pform select{font:inherit;border:1px solid var(--line);background:#fff;padding:7px 8px;color:var(--ink)}
+.pbar .sp{flex:1}
+#tPagos td:first-child,#tClas td:first-child{white-space:nowrap}
+.pform{background:var(--paper);border:1px solid var(--taupe);padding:16px;margin-bottom:14px;display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.pform label{display:block;font-size:11px;letter-spacing:1.3px;text-transform:uppercase;color:var(--muted);margin-bottom:3px}
+.pform input,.pform select{width:100%}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin:4px 0 12px}
+.chip{border:1px solid var(--line);background:var(--paper);padding:6px 12px;cursor:pointer;font-size:13px;border-radius:16px}
+.chip.on{background:var(--ink);color:var(--cream);border-color:var(--ink)}
+.sem{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:0}
+.sem.verde{background:var(--green)}.sem.amarillo{background:#D4A23A}.sem.rojo{background:var(--red)}
+.mini{font-size:12px;padding:4px 9px;margin:2px 4px 2px 0;cursor:pointer;border:1px solid var(--line);background:#fff}
+.mini.pri{background:var(--ink);color:var(--cream);border-color:var(--ink)}
+@media (max-width:760px){.pform{grid-template-columns:1fr 1fr}}
 .vbox{border:1.5px dashed var(--taupe);background:var(--paper);padding:30px 20px;text-align:center;cursor:pointer;margin-bottom:16px}
 .vbox.over{background:#EFEAE5}.vbox h2{font:500 24px 'Cormorant Garamond',serif;margin:0 0 4px}.vbox p{margin:0;color:var(--muted)}
 .vres{background:var(--paper);border:1px solid var(--line);margin-bottom:14px}
@@ -159,6 +175,7 @@ details.manual{margin-top:10px}details.manual summary{cursor:pointer;color:var(-
 
     <div class="tabs" id="tabs">
       <button class="tab on" data-p="verificar">Verificar antes de pagar</button>
+      <button class="tab" data-p="pagos">Pagos sin factura <span class="n" id="nPagos">0</span></button>
       <button class="tab" data-p="resumen">Resumen mensual</button>
       <button class="tab" data-p="fugas">Fugas <span class="n" id="nFugas">0</span></button>
       <button class="tab" data-p="prov">Proveedores a corregir</button>
@@ -173,6 +190,35 @@ details.manual{margin-top:10px}details.manual summary{cursor:pointer;color:var(-
         <input type="file" id="vfile" multiple accept=".xml,.zip,.pdf" class="hidden">
       </div>
       <div id="vout"></div>
+    </div>
+
+    <div class="panel" id="p-pagos">
+      <div class="pbar">
+        <div><label>Banco</label><select id="pCuenta"><option>Multiva</option><option>HSBC</option><option>Santander</option><option>BBVA</option></select></div>
+        <div><label>Tipo</label><select id="pTipo"><option value="debito">Cuenta / débito</option><option value="credito">Tarjeta de crédito</option></select></div>
+        <div><label>Estado de cuenta (Excel o CSV)</label><input type="file" id="pFile" multiple accept=".csv,.xlsx,.xlsm,.txt"></div>
+        <button class="btn" id="pImp">Importar movimientos</button>
+        <span class="sp"></span>
+        <button class="btn line" id="pNuevo">+ Registrar un pago</button>
+      </div>
+      <form class="pform hidden" id="pForm">
+        <div><label>Fecha del pago</label><input type="date" name="fecha" required></div>
+        <div><label>Monto total</label><input type="number" step="0.01" name="monto" required></div>
+        <div><label>Proveedor / comercio</label><input name="proveedor" required placeholder="Ej. Gasolinera Shell"></div>
+        <div><label>Pagado con</label><select name="forma"><option value="transferencia">Transferencia</option><option value="tarjeta_debito">Tarjeta de débito</option><option value="tarjeta_credito">Tarjeta de crédito</option></select></div>
+        <div><label>Banco</label><select name="cuenta"><option>Multiva</option><option>HSBC</option><option>Santander</option><option>BBVA</option></select></div>
+        <div><label>Foto del ticket (opcional)</label><input type="file" name="foto" accept="image/*" capture="environment"></div>
+        <div><label>Notas</label><input name="notas" placeholder="Opcional"></div>
+        <div style="align-self:end"><button class="btn" type="submit">Guardar pago</button></div>
+      </form>
+      <div class="kpis" id="pKpis"></div>
+      <div class="card hidden" id="pClasCard">
+        <h3>Por clasificar</h3>
+        <p class="sub">Cargos nuevos de tus estados de cuenta. Marca cuáles son gastos del consultorio que deben tener factura. "Siempre" aplica la misma decisión a ese comercio en adelante.</p>
+        <div class="tablewrap"><table id="tClas"></table></div>
+      </div>
+      <div class="chips" id="pChips"></div>
+      <div class="card"><div class="tablewrap"><table id="tPagos"></table></div></div>
     </div>
 
     <div class="panel" id="p-resumen">
@@ -281,7 +327,7 @@ async function cargar(){
   const [st,list]=await Promise.all([api('/api/status'),api('/api/cfdi')]);
   STATUS=st;DATA=list;
   $('#gate').classList.add('hidden');$('#app').classList.remove('hidden');$('#btnSalir').classList.remove('hidden');
-  renderSync();refreshSelectors();render();setStatus('');
+  renderSync();refreshSelectors();render();setStatus('');cargarPagos();
 }
 function cuando(iso){if(!iso)return 'nunca';const d=new Date(iso);return d.toLocaleString('es-MX',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}
 function renderSync(){
@@ -492,6 +538,54 @@ vdrop.onclick=()=>vfile.click();vfile.onchange=()=>{verificar(vfile.files);vfile
 ['dragenter','dragover'].forEach(e=>vdrop.addEventListener(e,ev=>{ev.preventDefault();vdrop.classList.add('over')}));
 ['dragleave','drop'].forEach(e=>vdrop.addEventListener(e,ev=>{ev.preventDefault();vdrop.classList.remove('over')}));
 vdrop.addEventListener('drop',ev=>verificar(ev.dataTransfer.files));
+
+/* ---------- pagos sin factura ---------- */
+let PAGOS=[],PFILTRO='pend';
+async function cargarPagos(){try{PAGOS=await api('/api/pagos');renderPagos()}catch(e){setStatus(e.message)}}
+function renderPagos(){
+  const req=PAGOS.filter(p=>p.estado==='requiere'),clas=PAGOS.filter(p=>p.estado==='clasificar');
+  const g=f=>req.filter(f),sum=a=>a.reduce((s,p)=>s+p.monto,0);
+  const pend=g(p=>!p.uuid&&p.dias>=0),venc=g(p=>!p.uuid&&p.dias<0),prob=g(p=>p.uuid&&p.semaforo==='rojo'),ok=g(p=>p.semaforo==='verde');
+  $('#nPagos').textContent=pend.length+venc.length+prob.length+clas.length;
+  $('#pKpis').innerHTML=`
+    <div class="kpi"><div class="l">Por clasificar</div><div class="v">${clas.length}</div><div class="s">cargos nuevos sin revisar</div></div>
+    <div class="kpi"><div class="l">Pagados sin factura (en plazo)</div><div class="v">${fmt(sum(pend))}</div><div class="s">${pend.length} pagos · pedir factura antes de fin de mes</div></div>
+    <div class="kpi alert"><div class="l">Vencidos o con problema</div><div class="v">${fmt(sum(venc)+sum(prob))}</div><div class="s">${venc.length} sin factura · ${prob.length} con factura mal hecha</div></div>
+    <div class="kpi"><div class="l">Cubiertos con factura válida</div><div class="v">${fmt(sum(ok))}</div><div class="s">${ok.length} pagos</div></div>`;
+  $('#pClasCard').classList.toggle('hidden',!clas.length);
+  $('#tClas').innerHTML=`<thead><tr><th>Fecha</th><th>Cuenta</th><th>Descripción</th><th class="num">Monto</th><th>¿Requiere factura?</th></tr></thead><tbody>${clas.map(p=>`<tr><td>${p.fecha}</td><td>${esc(p.cuenta)}</td><td>${esc(p.descripcion)}</td><td class="num">${fmt2(p.monto)}</td>
+    <td><button class="mini pri" data-c="requiere" data-id="${p.id}">Sí, gasto del consultorio</button><button class="mini" data-c="personal" data-id="${p.id}">Personal</button><button class="mini" data-c="ignorar" data-id="${p.id}">No es gasto</button>
+    <label style="font-size:12px;color:var(--muted);white-space:nowrap"><input type="checkbox" data-s="${p.id}"> siempre</label></td></tr>`).join('')}</tbody>`;
+  const F={pend:['Pendientes',pend],venc:['Vencidos',venc],prob:['Factura con problema',prob],ok:['Cubiertos',ok],otros:['Personales / no gasto',PAGOS.filter(p=>p.estado==='personal'||p.estado==='ignorar')]};
+  $('#pChips').innerHTML=Object.entries(F).map(([k,[l,a]])=>`<span class="chip ${k===PFILTRO?'on':''}" data-f="${k}">${l} · ${a.length}</span>`).join('');
+  const rows=F[PFILTRO][1];
+  $('#tPagos').innerHTML=`<thead><tr><th>Fecha</th><th>Cuenta</th><th>Pago</th><th class="num">Monto</th><th>Factura</th><th>Plazo</th></tr></thead><tbody>${rows.map(p=>{
+    let fac='';
+    if(p.factura)fac=`<b>${esc(p.factura.emNom)}</b><br><span class="uuid">${p.factura.fecha} · ${esc(p.factura.serie+p.factura.folio)} · ${fmt2(p.factura.total)}</span>${(p.problemas||[]).map(x=>`<br><span class="tag t-red">${esc(x)}</span>`).join('')}<br><button class="mini" data-u="${p.id}">Desvincular</button>`;
+    else if(p.estado==='requiere')fac=(p.sugerencias&&p.sugerencias.length?'<span style="font-size:12px;color:var(--muted)">¿Es alguna de estas?</span><br>'+p.sugerencias.map(s=>`<button class="mini" data-v="${p.id}" data-uuid="${s.uuid}">${esc(s.emNom.slice(0,28))} · ${s.fecha} · ${fmt2(s.total)}</button>`).join('<br>'):'<span class="tag t-amb">Aún no llega</span>');
+    else fac=`<span class="tag t-gry">${p.estado==='personal'?'Personal':'No es gasto'}</span> <button class="mini" data-c="clasificar" data-id="${p.id}">Reclasificar</button>`;
+    const plazo=p.estado!=='requiere'?'':p.uuid?(p.semaforo==='verde'?'<span class="sem verde"></span>Listo':'<span class="sem rojo"></span>Corregir'):(p.dias<0?`<span class="sem rojo"></span>Venció ${p.limite}`:`<span class="sem amarillo"></span>${p.dias} días<br><span class="uuid">límite ${p.limite}</span>`);
+    return `<tr><td>${p.fecha}</td><td>${esc(p.cuenta)}</td><td>${esc(p.proveedor&&p.proveedor!==p.descripcion?p.proveedor+' · ':'')}${esc(p.descripcion)}${p.foto?` · <a href="#" data-foto="${p.id}">ticket</a>`:''}</td><td class="num">${fmt2(p.monto)}</td><td>${fac}</td><td>${plazo}</td></tr>`}).join('')||'<tr><td colspan="6" class="empty">Nada en esta lista</td></tr>'}</tbody>`;
+}
+document.addEventListener('click',async ev=>{
+  const t=ev.target;
+  if(t.matches('.chip[data-f]')){PFILTRO=t.dataset.f;renderPagos();return}
+  const fd=new FormData();
+  try{
+    if(t.dataset.c){const id=t.dataset.id;fd.append('accion',t.dataset.c);const chk=document.querySelector(`[data-s="${id}"]`);if(chk&&chk.checked){fd.append('siempre','true');const p=PAGOS.find(x=>x.id==id);const pat=prompt('Aplicar siempre a los cargos que contengan:',(p.descripcion||'').slice(0,24));if(pat===null)return;fd.append('patron',pat)}
+      await api(`/api/pagos/${id}/clasificar`,{method:'POST',body:fd});await cargarPagos()}
+    else if(t.dataset.v){fd.append('uuid',t.dataset.uuid);await api(`/api/pagos/${t.dataset.v}/vincular`,{method:'POST',body:fd});await cargarPagos()}
+    else if(t.dataset.u){await api(`/api/pagos/${t.dataset.u}/vincular`,{method:'POST',body:fd});await cargarPagos()}
+    else if(t.dataset.foto){ev.preventDefault();const r=await fetch(API+`/api/pagos/${t.dataset.foto}/foto`,{headers:{Authorization:'Bearer '+ID_TOKEN}});window.open(URL.createObjectURL(await r.blob()))}
+  }catch(e){setStatus(e.message)}
+});
+$('#pImp').onclick=async()=>{const f=$('#pFile').files;if(!f.length){setStatus('Elige el archivo del estado de cuenta.');return}
+  const fd=new FormData();[...f].forEach(x=>fd.append('files',x));fd.append('cuenta',$('#pCuenta').value);fd.append('tipo',$('#pTipo').value);
+  setStatus('Importando…');try{const r=await api('/api/pagos/importar',{method:'POST',body:fd});$('#pFile').value='';
+  setStatus(`${r.cargos} cargos leídos · ${r.nuevos} nuevos · ${r.vinculados} amarrados a su factura automáticamente`);await cargarPagos()}catch(e){setStatus(e.message)}};
+$('#pNuevo').onclick=()=>$('#pForm').classList.toggle('hidden');
+$('#pForm').onsubmit=async ev=>{ev.preventDefault();const fd=new FormData(ev.target);if(!fd.get('foto')||!fd.get('foto').size)fd.delete('foto');
+  try{await api('/api/pagos/manual',{method:'POST',body:fd});ev.target.reset();ev.target.classList.add('hidden');setStatus('Pago registrado. La app avisará cuando llegue su factura.');await cargarPagos()}catch(e){setStatus(e.message)}};
 
 /* ---------- eventos ---------- */
 const drop=$('#drop'),file=$('#file');

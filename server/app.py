@@ -778,3 +778,403 @@ async def verificar(files: list[UploadFile] = File(...), email=Depends(usuario))
             res.append(r)
     evento(f"{email} verificó {len(res)} factura(s) antes de pagar.")
     return res
+
+
+# ================================================================ PAGOS → FACTURA
+# La otra cara: primero se paga (gasolina, anticipos, tarjeta) y la factura llega después.
+# Cada egreso bancario debe terminar amarrado a un CFDI recibido válido.
+import calendar
+import hashlib
+import re
+import unicodedata
+
+with db() as c:
+    c.executescript("""
+    CREATE TABLE IF NOT EXISTS pagos(
+      id INTEGER PRIMARY KEY AUTOINCREMENT, hash TEXT UNIQUE, cuenta TEXT, fecha TEXT, monto REAL,
+      descripcion TEXT, referencia TEXT, forma TEXT, origen TEXT,
+      estado TEXT DEFAULT 'clasificar',   -- clasificar | requiere | personal | ignorar
+      proveedor TEXT, rfc TEXT, uuid TEXT, vinculo TEXT, notas TEXT, foto TEXT,
+      creado TEXT, actualizado TEXT
+    );
+    CREATE TABLE IF NOT EXISTS reglas(
+      id INTEGER PRIMARY KEY AUTOINCREMENT, patron TEXT UNIQUE, accion TEXT, proveedor TEXT, rfc TEXT, creado TEXT
+    );
+    """)
+
+CUENTAS = ["Multiva", "HSBC", "Santander", "BBVA"]
+MESES_ES = {"ene": 1, "feb": 2, "mar": 3, "abr": 4, "may": 5, "jun": 6, "jul": 7, "ago": 8,
+            "sep": 9, "set": 9, "oct": 10, "nov": 11, "dic": 12,
+            "jan": 1, "apr": 4, "aug": 8, "dec": 12}
+# Movimientos que no son gasto: traspasos propios, pagos de tarjeta, impuestos, comisiones bancarias se tratan aparte
+IGNORAR_AUTO = re.compile(
+    r"PAGO (A |DE )?(SU |TU )?TARJETA|PAGO TDC|PAGO TC\b|TRASPASO (ENTRE|A) (CUENTAS|MIS)|TRASPASO PROPIO|"
+    r"ENTRE CUENTAS PROPIAS|INVERSION|RETIRO SIN TARJETA|RETIRO CAJERO|DISPOSICION EFECTIVO|"
+    r"PAGO REFERENCIADO SAT|IMPUESTOS FEDERALES|SAT\b.*PAGO|DEVOLUCION|ABONO", re.I)
+
+
+def _norm(s):
+    s = unicodedata.normalize("NFKD", str(s or "")).encode("ascii", "ignore").decode()
+    return re.sub(r"\s+", " ", s).strip().upper()
+
+
+def _fecha(v):
+    if v is None or v == "":
+        return None
+    if isinstance(v, (dt.datetime, dt.date)):
+        return (v.date() if isinstance(v, dt.datetime) else v).isoformat()
+    s = _norm(v).replace(".", "")
+    for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%d/%m/%y", "%d-%m-%y", "%Y/%m/%d", "%d%m%Y"):
+        try:
+            return dt.datetime.strptime(s[:10], fmt).date().isoformat()
+        except ValueError:
+            pass
+    m = re.match(r"(\d{1,2})[\s/-]*([A-Z]{3})[A-Z]*[\s/-]*(\d{2,4})", s)
+    if m and m.group(2).lower() in MESES_ES:
+        y = int(m.group(3))
+        y = y + 2000 if y < 100 else y
+        return dt.date(y, MESES_ES[m.group(2).lower()], int(m.group(1))).isoformat()
+    return None
+
+
+def _monto(v):
+    if v is None or v == "":
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v).strip().replace("$", "").replace(" ", "")
+    neg = s.startswith("-") or (s.startswith("(") and s.endswith(")"))
+    s = s.strip("-()")
+    if re.match(r"^\d{1,3}(\.\d{3})+(,\d+)?$", s):  # 1.234,56
+        s = s.replace(".", "").replace(",", ".")
+    else:
+        s = s.replace(",", "")
+    try:
+        x = float(s)
+    except ValueError:
+        return None
+    return -x if neg else x
+
+
+def _filas_de_archivo(name, data):
+    name = name.lower()
+    if name.endswith((".xlsx", ".xlsm")):
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+        rows = []
+        for ws in wb.worksheets:
+            rows += [list(r) for r in ws.iter_rows(values_only=True)]
+        return rows
+    import csv
+    txt = None
+    for enc in ("utf-8-sig", "latin-1"):
+        try:
+            txt = data.decode(enc)
+            break
+        except UnicodeDecodeError:
+            pass
+    dialect = csv.Sniffer().sniff(txt[:5000], delimiters=",;\t|") if txt else csv.excel
+    return [r for r in csv.reader(io.StringIO(txt), dialect)]
+
+
+def _col(head, *pats):
+    for i, h in enumerate(head):
+        if any(re.search(p, h) for p in pats):
+            return i
+    return None
+
+
+def parse_estado_cuenta(name, data, tipo):
+    """Detecta encabezados y devuelve egresos [{fecha, monto, descripcion, referencia}]. tipo: debito|credito."""
+    rows = _filas_de_archivo(name, data)
+    hi = None
+    for i, r in enumerate(rows[:60]):
+        h = [_norm(x).lower() for x in r]
+        if _col(h, r"^fecha", r"fecha (de )?(operacion|movimiento|aplicacion|cargo)") is not None and \
+           _col(h, r"descrip", r"concepto", r"detalle", r"movimiento", r"establecimiento", r"comercio") is not None:
+            hi = i
+            break
+    if hi is None:
+        raise HTTPException(400, f"No reconocí las columnas de {name}. Necesito al menos Fecha y Descripción/Concepto.")
+    h = [_norm(x).lower() for x in rows[hi]]
+    cf = _col(h, r"fecha (de )?(operacion|movimiento|cargo)", r"^fecha$", r"^fecha")
+    cd = _col(h, r"descrip", r"concepto", r"detalle", r"establecimiento", r"comercio", r"movimiento")
+    cc = _col(h, r"cargo", r"retiro", r"debito", r"egreso", r"salida")
+    ca = _col(h, r"abono", r"deposito", r"credito", r"ingreso", r"entrada")
+    ci = _col(h, r"importe", r"monto", r"cantidad")
+    cr = _col(h, r"referencia", r"folio", r"autoriza", r"clave de rastreo")
+    out = []
+    for r in rows[hi + 1:]:
+        if not r or all(x in (None, "") for x in r):
+            continue
+        g = lambda i: r[i] if i is not None and i < len(r) else None
+        f = _fecha(g(cf))
+        if not f:
+            continue
+        desc = re.sub(r"\s+", " ", str(g(cd) or "")).strip()
+        monto = None
+        if cc is not None:
+            v = _monto(g(cc))
+            if v:
+                monto = abs(v)
+        elif ci is not None:
+            v = _monto(g(ci))
+            if v is None:
+                continue
+            if tipo == "credito":
+                monto = v if v > 0 else None      # en tarjeta de crédito los cargos vienen positivos
+            else:
+                monto = -v if v < 0 else None     # en débito los cargos vienen negativos
+        if not monto:
+            continue
+        out.append({"fecha": f, "monto": round(monto, 2), "descripcion": desc, "referencia": str(g(cr) or "").strip()})
+    return out
+
+
+def _limite(fecha_pago):
+    """Fecha límite para tener factura: último día del mes del pago (regla general PUE)."""
+    d = dt.date.fromisoformat(fecha_pago)
+    return dt.date(d.year, d.month, calendar.monthrange(d.year, d.month)[1]).isoformat()
+
+
+def aplicar_reglas(c, p):
+    desc = _norm(p["descripcion"])
+    if IGNORAR_AUTO.search(desc):
+        return "ignorar", None, None
+    for r in c.execute("SELECT * FROM reglas ORDER BY length(patron) DESC"):
+        if r["patron"] and r["patron"] in desc:
+            return r["accion"], r["proveedor"], r["rfc"]
+    return "clasificar", None, None
+
+
+def guardar_pagos(items, cuenta, forma, origen):
+    nuevos = 0
+    vistos = {}
+    with db() as c:
+        for it in items:
+            base = f"{cuenta}|{it['fecha']}|{it['monto']:.2f}|{_norm(it['descripcion'])}|{it.get('referencia','')}"
+            vistos[base] = vistos.get(base, 0) + 1
+            h = hashlib.sha1(f"{base}|{vistos[base]}".encode()).hexdigest()
+            if c.execute("SELECT 1 FROM pagos WHERE hash=?", (h,)).fetchone():
+                continue
+            estado, prov, rfc = aplicar_reglas(c, it)
+            c.execute("""INSERT INTO pagos(hash,cuenta,fecha,monto,descripcion,referencia,forma,origen,estado,proveedor,rfc,creado,actualizado)
+                         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                      (h, cuenta, it["fecha"], it["monto"], it["descripcion"], it.get("referencia", ""), forma, origen,
+                       estado, prov or it.get("proveedor"), rfc or it.get("rfc"), now_iso(), now_iso()))
+            nuevos += 1
+    return nuevos
+
+
+# ---------------------------------------------------------------- cruce pago ↔ factura
+STOP = {"SA", "DE", "CV", "S", "A", "C", "V", "SAPI", "SRL", "RL", "SC", "MEXICO", "MX", "THE", "Y", "LA", "EL", "DEL",
+        "COMPRA", "PAGO", "SPEI", "ENVIADO", "TRANSFERENCIA", "CARGO", "POS", "TDC", "TDD", "REF", "CONCEPTO"}
+
+
+def _tokens(s):
+    return {t for t in re.findall(r"[A-Z0-9]{3,}", _norm(s)) if t not in STOP}
+
+
+def _candidatas(c, p, rfc_mio):
+    """CFDI recibidos de ingreso, vigentes, no vinculados, con monto igual (±$1) y fecha cercana."""
+    desde = (dt.date.fromisoformat(p["fecha"]) - dt.timedelta(days=20)).isoformat()
+    hasta = (dt.date.fromisoformat(p["fecha"]) + dt.timedelta(days=60)).isoformat()
+    usados = {r["uuid"] for r in c.execute("SELECT uuid FROM pagos WHERE uuid IS NOT NULL AND id<>?", (p["id"],))}
+    cancel = {r["uuid"] for r in c.execute("SELECT uuid FROM estatus WHERE estatus='Cancelado'")}
+    out = []
+    for r in c.execute("SELECT data FROM cfdi"):
+        d = json.loads(r["data"])
+        if d["rcRfc"] != rfc_mio or d["tipo"] != "I" or d["uuid"] in usados or d["uuid"] in cancel:
+            continue
+        if not (desde <= d["fecha"] <= hasta) or abs(d["total"] - p["monto"]) > 1.0:
+            continue
+        score = 50
+        if p.get("rfc") and p["rfc"] == d["emRfc"]:
+            score += 40
+        comunes = _tokens(p["descripcion"] + " " + (p.get("proveedor") or "")) & _tokens(d["emNom"])
+        score += min(30, 15 * len(comunes))
+        score -= min(20, abs((dt.date.fromisoformat(d["fecha"]) - dt.date.fromisoformat(p["fecha"])).days) // 3)
+        out.append((score, d))
+    out.sort(key=lambda x: -x[0])
+    return out
+
+
+def revisar_factura(d, p, rfcs69, complementos=None):
+    complementos = complementos or {}
+    """Problemas de deducibilidad de la factura vinculada a un pago."""
+    prob = []
+    if d.get("uso") == "S01":
+        prob.append("Uso S01: sin efectos fiscales")
+    elif d.get("uso") and not re_uso_ok(d["uso"]) and not d["uso"].startswith("D"):
+        prob.append(f"Uso {d['uso']} no deducible")
+    if d.get("rcReg") and d["rcReg"] not in ("612", "626"):
+        prob.append(f"Facturada al régimen {d['rcReg']}, no al 612")
+    if d.get("forma") == "01" and d["total"] > 2000:
+        prob.append("La factura dice efectivo; pagaste con banco")
+    grupos = {"transferencia": {"02", "03"}, "tarjeta_credito": {"04", "28"}, "tarjeta_debito": {"04", "28"}}
+    nombres = {"transferencia": "transferencia", "tarjeta_credito": "tarjeta", "tarjeta_debito": "tarjeta"}
+    esperado = grupos.get(p.get("forma") or "")
+    if esperado and d.get("forma") and d["forma"] not in esperado | {"99", "01", "30"}:
+        prob.append(f"La factura dice forma de pago {d['forma']}, pero pagaste con {nombres[p['forma']]}")
+    if d.get("metodo") == "PPD" and not complementos.get(d["uuid"]):
+        prob.append("Factura PPD: falta que el proveedor emita el complemento de pago")
+    if rfcs69.get(d["emRfc"]):
+        prob.append(f"Proveedor en lista 69-B: {rfcs69[d['emRfc']]}")
+    return prob
+
+
+def cruzar_pagos():
+    _, info = cargar_fiel()
+    rfc_mio = info["rfc"] if info else "SOMM790130NHA"
+    vinc = 0
+    with db() as c:
+        pend = [dict(r) for r in c.execute("SELECT * FROM pagos WHERE estado='requiere' AND uuid IS NULL")]
+        for p in pend:
+            cands = _candidatas(c, p, rfc_mio)
+            if not cands:
+                continue
+            mejor = cands[0]
+            unico = len(cands) == 1 or cands[0][0] - cands[1][0] >= 25
+            if mejor[0] >= 65 and unico:
+                c.execute("UPDATE pagos SET uuid=?, vinculo='auto', proveedor=COALESCE(proveedor,?), rfc=COALESCE(rfc,?), actualizado=? WHERE id=?",
+                          (mejor[1]["uuid"], mejor[1]["emNom"], mejor[1]["emRfc"], now_iso(), p["id"]))
+                vinc += 1
+    if vinc:
+        evento(f"Cruce automático: {vinc} pago(s) quedaron amarrados a su factura.")
+    return vinc
+
+
+# Corre también después de cada descarga del SAT
+_ciclo_original = ciclo
+
+
+def ciclo(forzar_diario=False):  # noqa: F811
+    _ciclo_original(forzar_diario)
+    try:
+        cruzar_pagos()
+    except Exception as e:
+        evento(f"Error en cruce de pagos: {e}", "error")
+
+
+# ---------------------------------------------------------------- API pagos
+@app.get("/api/pagos")
+def api_pagos(email=Depends(usuario)):
+    _, info = cargar_fiel()
+    rfc_mio = info["rfc"] if info else "SOMM790130NHA"
+    rfcs69, _ = lista_69b()
+    hoy = dt.datetime.now(TZ).date().isoformat()
+    out = []
+    with db() as c:
+        cfdi = {r["uuid"]: json.loads(r["data"]) for r in c.execute(
+            "SELECT uuid, data FROM cfdi WHERE uuid IN (SELECT uuid FROM pagos WHERE uuid IS NOT NULL)")}
+        cancel = {r["uuid"] for r in c.execute("SELECT uuid FROM estatus WHERE estatus='Cancelado'")}
+        complementos = {}
+        for r in c.execute("SELECT data FROM cfdi WHERE data LIKE '%\"tipo\": \"P\"%'"):
+            for pg in json.loads(r["data"]).get("pagos", []):
+                complementos[pg["uuid"]] = complementos.get(pg["uuid"], 0) + pg["imp"]
+        for r in c.execute("SELECT * FROM pagos ORDER BY fecha DESC, id DESC"):
+            p = dict(r)
+            p.pop("hash", None)
+            p["limite"] = _limite(p["fecha"])
+            p["dias"] = (dt.date.fromisoformat(p["limite"]) - dt.date.fromisoformat(hoy)).days
+            if p["estado"] == "requiere":
+                if p["uuid"]:
+                    d = cfdi.get(p["uuid"])
+                    if not d:
+                        p["semaforo"], p["problemas"] = "rojo", ["La factura vinculada ya no está en el sistema"]
+                    else:
+                        prob = revisar_factura(d, p, rfcs69, complementos)
+                        if p["uuid"] in cancel:
+                            prob.insert(0, "La factura fue CANCELADA")
+                        p["factura"] = {k: d[k] for k in ("uuid", "fecha", "emNom", "emRfc", "total", "uso", "forma", "metodo", "serie", "folio")}
+                        p["problemas"] = prob
+                        p["semaforo"] = "rojo" if prob else "verde"
+                else:
+                    p["sugerencias"] = [{"uuid": d["uuid"], "fecha": d["fecha"], "emNom": d["emNom"], "emRfc": d["emRfc"],
+                                         "total": d["total"], "score": s} for s, d in _candidatas(c, p, rfc_mio)[:3]]
+                    p["semaforo"] = "rojo" if p["dias"] < 0 else "amarillo"
+            out.append(p)
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/pagos/importar")
+async def importar_pagos(files: list[UploadFile] = File(...), cuenta: str = Form(...), tipo: str = Form("debito"),
+                         email=Depends(usuario)):
+    forma = {"credito": "tarjeta_credito", "debito": "transferencia"}.get(tipo, "transferencia")
+    tot_mov = tot_new = 0
+    for f in files:
+        items = parse_estado_cuenta(f.filename or "", await f.read(), tipo)
+        tot_mov += len(items)
+        tot_new += guardar_pagos(items, f"{cuenta} {'crédito' if tipo == 'credito' else 'débito/cuenta'}", forma, "estado de cuenta")
+    v = cruzar_pagos()
+    evento(f"{email} importó {tot_mov} cargos de {cuenta} ({tot_new} nuevos).")
+    return {"cargos": tot_mov, "nuevos": tot_new, "vinculados": v}
+
+
+@app.post("/api/pagos/manual")
+async def pago_manual(fecha: str = Form(...), monto: float = Form(...), proveedor: str = Form(...),
+                      cuenta: str = Form(...), forma: str = Form("transferencia"), notas: str = Form(""),
+                      foto: UploadFile | None = File(None), email=Depends(usuario)):
+    item = {"fecha": _fecha(fecha) or fecha, "monto": round(monto, 2), "descripcion": proveedor, "proveedor": proveedor}
+    guardar_pagos([item], cuenta, forma, f"manual · {email}")
+    with db() as c:
+        pid = c.execute("SELECT max(id) m FROM pagos").fetchone()["m"]
+        ruta = None
+        if foto is not None and foto.filename:
+            os.makedirs(os.path.join(DATA_DIR, "tickets"), exist_ok=True)
+            ext = os.path.splitext(foto.filename)[1].lower()[:5] or ".jpg"
+            ruta = os.path.join("tickets", f"{pid}{ext}")
+            with open(os.path.join(DATA_DIR, ruta), "wb") as fh:
+                fh.write(await foto.read())
+        c.execute("UPDATE pagos SET estado='requiere', notas=?, foto=COALESCE(?,foto) WHERE id=?", (notas, ruta, pid))
+    cruzar_pagos()
+    return {"ok": True, "id": pid}
+
+
+@app.post("/api/pagos/{pid}/clasificar")
+async def clasificar(pid: int, accion: str = Form(...), siempre: bool = Form(False), patron: str = Form(""),
+                     proveedor: str = Form(""), email=Depends(usuario)):
+    if accion not in ("requiere", "personal", "ignorar", "clasificar"):
+        raise HTTPException(400, "Acción inválida")
+    with db() as c:
+        p = c.execute("SELECT * FROM pagos WHERE id=?", (pid,)).fetchone()
+        if not p:
+            raise HTTPException(404, "No existe")
+        c.execute("UPDATE pagos SET estado=?, proveedor=COALESCE(NULLIF(?,''),proveedor), actualizado=? WHERE id=?",
+                  (accion, proveedor, now_iso(), pid))
+        n = 1
+        if siempre:
+            pat = _norm(patron) or _norm(p["descripcion"])[:30]
+            c.execute("INSERT OR REPLACE INTO reglas(patron,accion,proveedor,creado) VALUES(?,?,?,?)",
+                      (pat, accion, proveedor or None, now_iso()))
+            cur = c.execute("UPDATE pagos SET estado=?, actualizado=? WHERE estado='clasificar' AND instr(upper(descripcion), ?) > 0",
+                            (accion, now_iso(), pat))
+            n += cur.rowcount
+    if accion == "requiere":
+        cruzar_pagos()
+    return {"ok": True, "afectados": n}
+
+
+@app.post("/api/pagos/{pid}/vincular")
+async def vincular(pid: int, uuid: str = Form(""), email=Depends(usuario)):
+    with db() as c:
+        if uuid:
+            d = c.execute("SELECT data FROM cfdi WHERE uuid=?", (uuid.upper(),)).fetchone()
+            if not d:
+                raise HTTPException(404, "Esa factura no está en el sistema")
+            d = json.loads(d["data"])
+            c.execute("UPDATE pagos SET uuid=?, vinculo='manual', proveedor=COALESCE(proveedor,?), rfc=COALESCE(rfc,?), actualizado=? WHERE id=?",
+                      (d["uuid"], d["emNom"], d["emRfc"], now_iso(), pid))
+        else:
+            c.execute("UPDATE pagos SET uuid=NULL, vinculo=NULL, actualizado=? WHERE id=?", (now_iso(), pid))
+    return {"ok": True}
+
+
+@app.get("/api/pagos/{pid}/foto")
+def foto_pago(pid: int, email=Depends(usuario)):
+    with db() as c:
+        r = c.execute("SELECT foto FROM pagos WHERE id=?", (pid,)).fetchone()
+    if not r or not r["foto"]:
+        raise HTTPException(404, "Sin foto")
+    from fastapi.responses import FileResponse
+    return FileResponse(os.path.join(DATA_DIR, r["foto"]))
