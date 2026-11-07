@@ -201,7 +201,7 @@ details.manual{margin-top:10px}details.manual summary{cursor:pointer;color:var(-
     </div>
 
     <div class="panel on" id="p-mes">
-      <div class="toolbar"><select id="mSel"></select><span class="note" id="mCierre" style="margin:0"></span></div>
+      <div class="toolbar"><select id="mSel"></select><span class="note" id="mCierre" style="margin:0;flex:1"></span><button class="btn" id="mReg">+ Registrar un egreso</button></div>
       <div class="kpis" id="mKpis"></div>
       <div class="chips" id="mChips"></div>
       <div class="card"><div class="tablewrap"><table id="tMesEg"></table></div>
@@ -622,6 +622,7 @@ function analyzeMonthGastos(all){
   [...new Set(all.map(x=>x.fecha.slice(0,4)))].forEach(y=>{S.year=y;const a=analyze();out.push(...a.gastos)});S.year=saveY;return out;
 }
 $('#mSel').onchange=e=>{MSEL=e.target.value;renderTablero()};
+$('#mReg').onclick=()=>{document.querySelector('.tab[data-p=pagos]').click();$('#pForm').scrollIntoView({behavior:'smooth'});setTimeout(()=>$('#fMonto').focus(),400)};
 document.addEventListener('click',e=>{if(e.target.matches('.chip[data-mf]')){MFILTRO=e.target.dataset.mf;renderTablero()}});
 function renderPagos(){
   const req=PAGOS.filter(p=>p.estado==='requiere'),clas=PAGOS.filter(p=>p.estado==='clasificar');
