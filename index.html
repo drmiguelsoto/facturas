@@ -73,6 +73,10 @@ tr:hover td{background:#FBFAF9}
 .note{font-size:12.5px;color:var(--muted);margin-top:10px}
 footer{color:var(--muted);font-size:12px;text-align:center;padding:20px}
 .hidden{display:none!important}
+#tMesEg td.sep{border-left:2px solid var(--line)}
+#tMesEg td:first-child{white-space:nowrap}
+.st{display:inline-block;font-size:12px;font-weight:500;padding:3px 9px;border-radius:2px;white-space:nowrap}
+.st.ok{background:var(--green-bg);color:var(--green)}.st.warn{background:var(--amber-bg);color:var(--amber)}.st.bad{background:var(--red-bg);color:var(--red)}.st.info{background:#EEEAE6;color:var(--muted)}
 .reg{background:var(--paper);border:1px solid var(--taupe);padding:18px 20px;margin-bottom:16px;max-width:720px}
 .reg h3{font:500 24px 'Cormorant Garamond',serif;margin:0 0 2px}
 .reg .foto{text-transform:none;letter-spacing:0;font-size:15px;color:var(--ink);display:block;border:1.5px dashed var(--taupe);text-align:center;padding:18px;cursor:pointer;margin:12px 0;font-weight:500;background:#FBFAF9}
@@ -186,7 +190,8 @@ details.manual{margin-top:10px}details.manual summary{cursor:pointer;color:var(-
     <div class="kpis" id="kpis"></div>
 
     <div class="tabs" id="tabs">
-      <button class="tab on" data-p="verificar">Verificar antes de pagar</button>
+      <button class="tab on" data-p="mes">Tablero del mes</button>
+      <button class="tab" data-p="verificar">Verificar antes de pagar</button>
       <button class="tab" data-p="pagos">Pagos sin factura <span class="n" id="nPagos">0</span></button>
       <button class="tab" data-p="resumen">Resumen mensual</button>
       <button class="tab" data-p="fugas">Fugas <span class="n" id="nFugas">0</span></button>
@@ -195,7 +200,15 @@ details.manual{margin-top:10px}details.manual summary{cursor:pointer;color:var(-
       <button class="tab" data-p="todas">Todas las facturas</button>
     </div>
 
-    <div class="panel on" id="p-verificar">
+    <div class="panel on" id="p-mes">
+      <div class="toolbar"><select id="mSel"></select><span class="note" id="mCierre" style="margin:0"></span></div>
+      <div class="kpis" id="mKpis"></div>
+      <div class="chips" id="mChips"></div>
+      <div class="card"><div class="tablewrap"><table id="tMesEg"></table></div>
+        <p class="note">Cada renglón es un egreso del mes. A la izquierda, el pago; a la derecha, su factura. Los pagos se registran en "Pagos sin factura"; las facturas llegan solas del SAT cada madrugada.</p></div>
+    </div>
+
+    <div class="panel" id="p-verificar">
       <div class="vbox" id="vdrop">
         <h2>Suelta aquí el XML de la factura que te piden pagar</h2>
         <p>Tu servidor le pregunta al SAT si existe y está vigente, revisa la lista negra 69-B y que esté bien hecha para deducirla.</p>
@@ -474,7 +487,7 @@ function render(){
     <div class="kpi alert"><div class="l">Gastos con fuga</div><div class="v">${fmt(t.leak)}</div><div class="s">${nLeak} facturas que hoy no deducen</div></div>
     <div class="kpi"><div class="l">Brecha ingreso − gasto</div><div class="v">${fmt(t.ing-t.ded)}</div><div class="s">${t.pers?`+ ${fmt(t.pers)} en deducciones personales`:'Base gravable aproximada'}</div></div>`;
   $('#nFugas').textContent=nLeak;
-  renderChart();renderMes();renderLeaks();renderFugas();renderProv();renderCobros();renderTodas();
+  renderChart();renderMes();renderLeaks();renderFugas();renderProv();renderCobros();renderTodas();renderTablero();
 }
 function renderChart(){
   const W=1100,H=300,pl=70,pb=28,pt=12,cw=(W-pl-10)/12;
@@ -559,7 +572,57 @@ vdrop.addEventListener('drop',ev=>verificar(ev.dataTransfer.files));
 
 /* ---------- pagos sin factura ---------- */
 let PAGOS=[],PFILTRO='pend';
-async function cargarPagos(){try{PAGOS=await api('/api/pagos');renderPagos()}catch(e){setStatus(e.message)}}
+async function cargarPagos(){try{PAGOS=await api('/api/pagos');renderPagos();renderTablero()}catch(e){setStatus(e.message)}}
+/* ---------- tablero del mes ---------- */
+let MSEL=null,MFILTRO='todos';
+function renderTablero(){
+  if(!A)return;
+  const hoy=new Date(),ym=hoyISO().slice(0,7);
+  const meses=[...new Set(DATA.filter(x=>x.rcRfc===S.rfc||x.emRfc===S.rfc).map(x=>x.fecha.slice(0,7)).concat(PAGOS.map(p=>p.fecha.slice(0,7))).concat([ym]))].sort().reverse();
+  if(!MSEL)MSEL=ym;
+  $('#mSel').innerHTML=meses.map(m=>`<option value="${m}" ${m===MSEL?'selected':''}>${MESES[+m.slice(5)-1]} ${m.slice(0,4)}</option>`).join('');
+  const [y,mo]=MSEL.split('-').map(Number),fin=new Date(y,mo,0),dias=Math.ceil((fin-new Date(hoy.getFullYear(),hoy.getMonth(),hoy.getDate()))/864e5);
+  $('#mCierre').innerHTML=dias>=0?`Cierre fiscal del mes: <b>${fin.toLocaleDateString('es-MX',{day:'numeric',month:'long'})}</b> · faltan ${dias} días`:'Mes cerrado';
+  // egresos: pagos que requieren factura + facturas recibidas del mes sin pago registrado
+  const all=DATA.filter(x=>x.estatus!=='Cancelado');
+  const gx={};analyzeMonthGastos(all).forEach(g=>gx[g.uuid]=g);
+  const vinc=new Set(PAGOS.filter(p=>p.uuid).map(p=>p.uuid));
+  const rows=[];
+  PAGOS.filter(p=>p.estado==='requiere'&&p.fecha.startsWith(MSEL)).forEach(p=>{
+    let st,cls;
+    if(p.uuid){if(p.semaforo==='verde'){st='Facturado';cls='ok'}else{st='Factura con problema';cls='bad'}}
+    else if(p.dias<0){st='Sin factura · venció';cls='bad'}else{st=`Sin factura · ${p.dias} días`;cls='warn'}
+    rows.push({fecha:p.fecha,pago:p,fac:p.factura,prob:p.problemas||[],monto:p.monto,st,cls,base:p.factura?(gx[p.factura.uuid]||{}).base:null});
+  });
+  Object.values(gx).filter(g=>g.fecha.startsWith(MSEL)&&!vinc.has(g.uuid)).forEach(g=>{
+    const prob=g.fugas.map(f=>FUGAS[f].l);
+    rows.push({fecha:g.fecha,pago:null,fac:g,prob,monto:g.total,base:g.base,st:prob.length?'Factura con problema':'Factura sin pago registrado',cls:prob.length?'bad':'info'});
+  });
+  rows.sort((a,b)=>a.fecha<b.fecha?1:-1);
+  const sum=(a,k='monto')=>a.reduce((s,r)=>s+(r[k]||0),0);
+  const ok=rows.filter(r=>r.cls==='ok'||r.cls==='info'),sinf=rows.filter(r=>!r.fac),bad=rows.filter(r=>r.fac&&r.cls==='bad');
+  const ing=(A&&MSEL.startsWith(S.year))?A.mes[+MSEL.slice(5)-1].ing:0;
+  const ded=sum(ok.filter(r=>r.base!=null),'base');
+  $('#mKpis').innerHTML=`
+    <div class="kpi"><div class="l">Ingresos facturados</div><div class="v">${fmt(ing)}</div><div class="s">base sin IVA</div></div>
+    <div class="kpi"><div class="l">Egresos con factura válida</div><div class="v">${fmt(ded)}</div><div class="s">${ok.length} egresos · ${ing?Math.round(ded/ing*100):0}% de tus ingresos</div></div>
+    <div class="kpi ${sinf.length?'alert':''}"><div class="l">Pagado sin factura</div><div class="v">${fmt(sum(sinf))}</div><div class="s">${sinf.length} pagos · ${dias>=0?'pedirla antes del cierre':'ya no entró al mes'}</div></div>
+    <div class="kpi ${bad.length?'alert':''}"><div class="l">Factura con problema</div><div class="v">${fmt(sum(bad))}</div><div class="s">${bad.length} facturas que hay que corregir</div></div>`;
+  const F={todos:['Todos',rows],sinf:['⚠ Sin factura',sinf],bad:['✕ Con problema',bad],ok:['✓ Facturados',ok]};
+  $('#mChips').innerHTML=Object.entries(F).map(([k,[l,a]])=>`<span class="chip ${k===MFILTRO?'on':''}" data-mf="${k}">${l} · ${a.length}</span>`).join('');
+  $('#tMesEg').innerHTML=`<thead><tr><th>Fecha</th><th>Egreso (pago)</th><th class="num">Pagado</th><th class="sep">Factura</th><th class="num">Facturado</th><th>Estado</th></tr></thead><tbody>${F[MFILTRO][1].map(r=>{
+    const pg=r.pago?`<b>${esc(r.pago.proveedor||r.pago.descripcion)}</b><br><span class="uuid">${esc(r.pago.cuenta)} · ${{tarjeta_credito:'T. crédito',tarjeta_debito:'T. débito',transferencia:'Transferencia',efectivo:'Efectivo'}[r.pago.forma]||esc(r.pago.forma||'')}${r.pago.notas?' · '+esc(r.pago.notas):''}</span>`:'<span class="uuid">— sin pago registrado —</span>';
+    const fc=r.fac?`<b>${esc(r.fac.emNom)}</b><br><span class="uuid">${r.fac.fecha} · ${esc((r.fac.serie||'')+(r.fac.folio||''))} · uso ${esc(r.fac.uso||'')}</span>`:'<span class="st warn">⚠ Aún no está facturado</span>';
+    return `<tr><td>${r.fecha}</td><td>${pg}</td><td class="num">${r.pago?fmt2(r.pago.monto):''}</td><td class="sep">${fc}</td><td class="num">${r.fac?fmt2(r.fac.total):''}</td>
+      <td><span class="st ${r.cls}">${esc(r.st)}</span>${r.prob.map(x=>`<br><span style="font-size:12px;color:var(--red)">${esc(x)}</span>`).join('')}</td></tr>`}).join('')||'<tr><td colspan="6" class="empty">Sin egresos en este mes</td></tr>'}</tbody>`;
+}
+function analyzeMonthGastos(all){
+  // reutiliza las reglas de fugas del análisis anual, pero para cualquier año
+  const saveY=S.year;const out=[];
+  [...new Set(all.map(x=>x.fecha.slice(0,4)))].forEach(y=>{S.year=y;const a=analyze();out.push(...a.gastos)});S.year=saveY;return out;
+}
+$('#mSel').onchange=e=>{MSEL=e.target.value;renderTablero()};
+document.addEventListener('click',e=>{if(e.target.matches('.chip[data-mf]')){MFILTRO=e.target.dataset.mf;renderTablero()}});
 function renderPagos(){
   const req=PAGOS.filter(p=>p.estado==='requiere'),clas=PAGOS.filter(p=>p.estado==='clasificar');
   const g=f=>req.filter(f),sum=a=>a.reduce((s,p)=>s+p.monto,0);
