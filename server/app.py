@@ -1010,9 +1010,10 @@ def revisar_factura(d, p, rfcs69, complementos=None):
     if d.get("rcReg") and d["rcReg"] not in ("612", "626"):
         prob.append(f"Facturada al régimen {d['rcReg']}, no al 612")
     if d.get("forma") == "01" and d["total"] > 2000:
-        prob.append("La factura dice efectivo; pagaste con banco")
-    grupos = {"transferencia": {"02", "03"}, "tarjeta_credito": {"04", "28"}, "tarjeta_debito": {"04", "28"}}
-    nombres = {"transferencia": "transferencia", "tarjeta_credito": "tarjeta", "tarjeta_debito": "tarjeta"}
+        prob.append("Pagado en efectivo por más de $2,000: no es deducible" if p.get("forma") == "efectivo"
+                    else "La factura dice efectivo; pagaste con banco")
+    grupos = {"transferencia": {"02", "03"}, "tarjeta_credito": {"04", "28"}, "tarjeta_debito": {"04", "28"}, "efectivo": {"01"}}
+    nombres = {"transferencia": "transferencia", "tarjeta_credito": "tarjeta", "tarjeta_debito": "tarjeta", "efectivo": "efectivo"}
     esperado = grupos.get(p.get("forma") or "")
     if esperado and d.get("forma") and d["forma"] not in esperado | {"99", "01", "30"}:
         prob.append(f"La factura dice forma de pago {d['forma']}, pero pagaste con {nombres[p['forma']]}")
@@ -1111,11 +1112,49 @@ async def importar_pagos(files: list[UploadFile] = File(...), cuenta: str = Form
     return {"cargos": tot_mov, "nuevos": tot_new, "vinculados": v}
 
 
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+PROMPT_TICKET = """Eres un capturista contable en México. Lee esta foto de un voucher de terminal, ticket o comprobante
+de transferencia y devuelve SOLO un JSON con estas llaves:
+{"fecha":"AAAA-MM-DD","monto":0.00,"comercio":"nombre del comercio o beneficiario","rfc":"RFC si aparece o vacío",
+ "forma":"tarjeta_credito|tarjeta_debito|transferencia|efectivo","banco":"Multiva|HSBC|Santander|BBVA|otro",
+ "ultimos4":"últimos 4 dígitos de la tarjeta o vacío","concepto":"qué se compró en pocas palabras (ej. gasolina)"}
+Monto = el TOTAL pagado. Si un dato no aparece, déjalo vacío. No inventes."""
+
+
+@app.post("/api/pagos/leer-ticket")
+async def leer_ticket(foto: UploadFile = File(...), email=Depends(usuario)):
+    """Lee la foto del voucher con IA para pre-llenar el pago. El usuario confirma antes de guardar."""
+    if not GEMINI_API_KEY:
+        return {"ok": False, "motivo": "sin_llave"}
+    import requests
+    data = await foto.read()
+    mime = foto.content_type or "image/jpeg"
+    body = {"contents": [{"parts": [{"text": PROMPT_TICKET},
+                                    {"inline_data": {"mime_type": mime, "data": base64.b64encode(data).decode()}}]}],
+            "generationConfig": {"responseMimeType": "application/json", "temperature": 0}}
+    try:
+        r = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent",
+                          params={"key": GEMINI_API_KEY}, json=body, timeout=60)
+        r.raise_for_status()
+        txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+        d = json.loads(txt[txt.find("{"): txt.rfind("}") + 1])
+    except Exception as e:
+        evento(f"No se pudo leer un ticket con IA: {e}", "warn")
+        return {"ok": False, "motivo": "error"}
+    d["fecha"] = _fecha(d.get("fecha")) or ""
+    d["monto"] = _monto(d.get("monto")) or ""
+    return {"ok": True, "datos": d}
+
+
 @app.post("/api/pagos/manual")
 async def pago_manual(fecha: str = Form(...), monto: float = Form(...), proveedor: str = Form(...),
                       cuenta: str = Form(...), forma: str = Form("transferencia"), notas: str = Form(""),
-                      foto: UploadFile | None = File(None), email=Depends(usuario)):
-    item = {"fecha": _fecha(fecha) or fecha, "monto": round(monto, 2), "descripcion": proveedor, "proveedor": proveedor}
+                      rfc: str = Form(""), foto: UploadFile | None = File(None), email=Depends(usuario)):
+    if forma == "efectivo" and monto > 2000:
+        notas = (notas + " · ").lstrip(" · ") + "OJO: efectivo > $2,000 no es deducible"
+    item = {"fecha": _fecha(fecha) or fecha, "monto": round(monto, 2), "descripcion": proveedor, "proveedor": proveedor,
+            "rfc": (rfc or "").strip().upper() or None, "referencia": f"manual-{now_iso()}"}
     guardar_pagos([item], cuenta, forma, f"manual · {email}")
     with db() as c:
         pid = c.execute("SELECT max(id) m FROM pagos").fetchone()["m"]

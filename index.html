@@ -73,6 +73,18 @@ tr:hover td{background:#FBFAF9}
 .note{font-size:12.5px;color:var(--muted);margin-top:10px}
 footer{color:var(--muted);font-size:12px;text-align:center;padding:20px}
 .hidden{display:none!important}
+.reg{background:var(--paper);border:1px solid var(--taupe);padding:18px 20px;margin-bottom:16px;max-width:720px}
+.reg h3{font:500 24px 'Cormorant Garamond',serif;margin:0 0 2px}
+.reg .foto{text-transform:none;letter-spacing:0;font-size:15px;color:var(--ink);display:block;border:1.5px dashed var(--taupe);text-align:center;padding:18px;cursor:pointer;margin:12px 0;font-weight:500;background:#FBFAF9}
+.reg .foto.ok{border-style:solid;background:var(--green-bg);color:var(--green)}
+.reg-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.reg-grid .wide{grid-column:1/-1}
+.reg label{display:block;font-size:11px;letter-spacing:1.3px;text-transform:uppercase;color:var(--muted);margin-bottom:3px}
+.reg input,.reg select{width:100%;font:inherit;font-size:16px;border:1px solid var(--line);background:#fff;padding:10px;color:var(--ink)}
+.qc{display:flex;flex-wrap:wrap;gap:6px}.qc span{border:1px solid var(--line);border-radius:16px;padding:6px 12px;cursor:pointer;font-size:13.5px;background:#fff}
+.qc span.on{background:var(--ink);color:var(--cream);border-color:var(--ink)}
+.reg-msg{font-size:13.5px;margin:10px 0;min-height:18px}
+.btn.big{width:100%;padding:13px;font-size:16px}
 .pbar{display:flex;gap:10px;flex-wrap:wrap;align-items:end;background:var(--paper);border:1px solid var(--line);padding:14px 16px;margin-bottom:14px}
 .pbar label{display:block;font-size:11px;letter-spacing:1.3px;text-transform:uppercase;color:var(--muted);margin-bottom:3px}
 .pbar select,.pbar input,.pform input,.pform select{font:inherit;border:1px solid var(--line);background:#fff;padding:7px 8px;color:var(--ink)}
@@ -193,23 +205,20 @@ details.manual{margin-top:10px}details.manual summary{cursor:pointer;color:var(-
     </div>
 
     <div class="panel" id="p-pagos">
-      <div class="pbar">
-        <div><label>Banco</label><select id="pCuenta"><option>Multiva</option><option>HSBC</option><option>Santander</option><option>BBVA</option></select></div>
-        <div><label>Tipo</label><select id="pTipo"><option value="debito">Cuenta / débito</option><option value="credito">Tarjeta de crédito</option></select></div>
-        <div><label>Estado de cuenta (Excel o CSV)</label><input type="file" id="pFile" multiple accept=".csv,.xlsx,.xlsm,.txt"></div>
-        <button class="btn" id="pImp">Importar movimientos</button>
-        <span class="sp"></span>
-        <button class="btn line" id="pNuevo">+ Registrar un pago</button>
-      </div>
-      <form class="pform hidden" id="pForm">
-        <div><label>Fecha del pago</label><input type="date" name="fecha" required></div>
-        <div><label>Monto total</label><input type="number" step="0.01" name="monto" required></div>
-        <div><label>Proveedor / comercio</label><input name="proveedor" required placeholder="Ej. Gasolinera Shell"></div>
-        <div><label>Pagado con</label><select name="forma"><option value="transferencia">Transferencia</option><option value="tarjeta_debito">Tarjeta de débito</option><option value="tarjeta_credito">Tarjeta de crédito</option></select></div>
-        <div><label>Banco</label><select name="cuenta"><option>Multiva</option><option>HSBC</option><option>Santander</option><option>BBVA</option></select></div>
-        <div><label>Foto del ticket (opcional)</label><input type="file" name="foto" accept="image/*" capture="environment"></div>
-        <div><label>Notas</label><input name="notas" placeholder="Opcional"></div>
-        <div style="align-self:end"><button class="btn" type="submit">Guardar pago</button></div>
+      <form class="reg" id="pForm" autocomplete="off">
+        <div class="reg-h"><h3>Registrar un pago</h3><p class="sub">Al momento de pagar: toma foto del voucher o captúralo a mano. La app avisa si a fin de mes no llegó su factura.</p></div>
+        <label class="foto" id="fotoBtn"><input type="file" name="foto" id="pFoto" accept="image/*" capture="environment" class="hidden"><span id="fotoTxt">📷 Foto del voucher o comprobante</span></label>
+        <div class="reg-grid">
+          <div><label>Monto total</label><input type="number" step="0.01" min="0" name="monto" id="fMonto" required inputmode="decimal" placeholder="$0.00"></div>
+          <div><label>Fecha</label><input type="date" name="fecha" id="fFecha" required></div>
+          <div class="wide"><label>Comercio / proveedor</label><input name="proveedor" id="fProv" required placeholder="Ej. Gasolinera Shell Coyoacán" list="provList"><datalist id="provList"></datalist></div>
+          <div class="wide"><label>Concepto</label><div class="qc" id="qc"><span>Gasolina</span><span>Insumos médicos</span><span>Farmacia</span><span>Material de curación</span><span>Estacionamiento</span><span>Comida de trabajo</span><span>Mantenimiento</span><span>Otro</span></div><input type="hidden" name="notas" id="fNotas"></div>
+          <div><label>Pagado con</label><select name="forma" id="fForma"><option value="tarjeta_credito">Tarjeta de crédito</option><option value="tarjeta_debito">Tarjeta de débito</option><option value="transferencia">Transferencia</option><option value="efectivo">Efectivo</option></select></div>
+          <div><label>Banco</label><select name="cuenta" id="fCuenta"><option>Multiva</option><option>HSBC</option><option>Santander</option><option>BBVA</option><option>Efectivo</option></select></div>
+          <input type="hidden" name="rfc" id="fRfc">
+        </div>
+        <div class="reg-msg" id="fMsg"></div>
+        <button class="btn big" type="submit">Guardar pago</button>
       </form>
       <div class="kpis" id="pKpis"></div>
       <div class="card hidden" id="pClasCard">
@@ -219,6 +228,15 @@ details.manual{margin-top:10px}details.manual summary{cursor:pointer;color:var(-
       </div>
       <div class="chips" id="pChips"></div>
       <div class="card"><div class="tablewrap"><table id="tPagos"></table></div></div>
+      <details class="manual"><summary>Importar movimientos del banco (opcional)</summary>
+        <div class="pbar" style="margin-top:10px">
+          <div><label>Banco</label><select id="pCuenta"><option>Multiva</option><option>HSBC</option><option>Santander</option><option>BBVA</option></select></div>
+          <div><label>Tipo</label><select id="pTipo"><option value="debito">Cuenta / débito</option><option value="credito">Tarjeta de crédito</option></select></div>
+          <div><label>Movimientos (Excel o CSV)</label><input type="file" id="pFile" multiple accept=".csv,.xlsx,.xlsm,.txt"></div>
+          <button class="btn" id="pImp">Importar</button>
+        </div>
+        <p class="note">Útil para cachar pagos que nadie registró. Los movimientos de la banca en línea se pueden bajar cualquier día, sin esperar el estado de cuenta.</p>
+      </details>
     </div>
 
     <div class="panel" id="p-resumen">
@@ -547,6 +565,7 @@ function renderPagos(){
   const g=f=>req.filter(f),sum=a=>a.reduce((s,p)=>s+p.monto,0);
   const pend=g(p=>!p.uuid&&p.dias>=0),venc=g(p=>!p.uuid&&p.dias<0),prob=g(p=>p.uuid&&p.semaforo==='rojo'),ok=g(p=>p.semaforo==='verde');
   $('#nPagos').textContent=pend.length+venc.length+prob.length+clas.length;
+  $('#provList').innerHTML=[...new Set(PAGOS.map(p=>p.proveedor).filter(Boolean).concat(DATA.filter(x=>x.rcRfc===S.rfc&&x.tipo==='I').map(x=>x.emNom)))].slice(0,300).map(n=>`<option value="${esc(n)}">`).join('');
   $('#pKpis').innerHTML=`
     <div class="kpi"><div class="l">Por clasificar</div><div class="v">${clas.length}</div><div class="s">cargos nuevos sin revisar</div></div>
     <div class="kpi"><div class="l">Pagados sin factura (en plazo)</div><div class="v">${fmt(sum(pend))}</div><div class="s">${pend.length} pagos · pedir factura antes de fin de mes</div></div>
@@ -583,9 +602,28 @@ $('#pImp').onclick=async()=>{const f=$('#pFile').files;if(!f.length){setStatus('
   const fd=new FormData();[...f].forEach(x=>fd.append('files',x));fd.append('cuenta',$('#pCuenta').value);fd.append('tipo',$('#pTipo').value);
   setStatus('Importando…');try{const r=await api('/api/pagos/importar',{method:'POST',body:fd});$('#pFile').value='';
   setStatus(`${r.cargos} cargos leídos · ${r.nuevos} nuevos · ${r.vinculados} amarrados a su factura automáticamente`);await cargarPagos()}catch(e){setStatus(e.message)}};
-$('#pNuevo').onclick=()=>$('#pForm').classList.toggle('hidden');
+const LS={get(k){try{return localStorage.getItem(k)}catch(e){return null}},set(k,v){try{localStorage.setItem(k,v)}catch(e){}}};
+function hoyISO(){const d=new Date();return new Date(d-d.getTimezoneOffset()*6e4).toISOString().slice(0,10)}
+function resetReg(){const f=$('#pForm');f.reset();$('#fFecha').value=hoyISO();$('#fForma').value=LS.get('ff')||'tarjeta_credito';$('#fCuenta').value=LS.get('fc')||'Multiva';
+  $('#fNotas').value='';$('#fRfc').value='';document.querySelectorAll('#qc span').forEach(x=>x.classList.remove('on'));$('#fotoBtn').classList.remove('ok');$('#fotoTxt').textContent='📷 Foto del voucher o comprobante'}
+resetReg();
+$('#qc').onclick=e=>{if(e.target.tagName!=='SPAN')return;document.querySelectorAll('#qc span').forEach(x=>x.classList.toggle('on',x===e.target));$('#fNotas').value=e.target.textContent;
+  if(!$('#fProv').value&&e.target.textContent!=='Otro')$('#fProv').placeholder='Nombre del comercio'};
+$('#fForma').onchange=()=>{if($('#fForma').value==='efectivo')$('#fCuenta').value='Efectivo'};
+$('#pFoto').onchange=async()=>{const f=$('#pFoto').files[0];if(!f)return;$('#fotoBtn').classList.add('ok');$('#fotoTxt').textContent='✓ Foto lista · leyendo el voucher…';
+  const fd=new FormData();fd.append('foto',f);
+  try{const r=await api('/api/pagos/leer-ticket',{method:'POST',body:fd});
+    if(r.ok){const d=r.datos;if(d.monto)$('#fMonto').value=d.monto;if(d.fecha)$('#fFecha').value=d.fecha;if(d.comercio)$('#fProv').value=d.comercio;if(d.rfc)$('#fRfc').value=d.rfc;
+      if(['tarjeta_credito','tarjeta_debito','transferencia','efectivo'].includes(d.forma))$('#fForma').value=d.forma;if(['Multiva','HSBC','Santander','BBVA'].includes(d.banco))$('#fCuenta').value=d.banco;
+      if(d.concepto){const m=[...document.querySelectorAll('#qc span')].find(x=>d.concepto.toLowerCase().includes(x.textContent.toLowerCase().split(' ')[0]));if(m)m.click();else $('#fNotas').value=d.concepto}
+      $('#fotoTxt').textContent='✓ Voucher leído · revisa los datos y guarda'}
+    else $('#fotoTxt').textContent='✓ Foto adjunta · captura monto y comercio'}catch(e){$('#fotoTxt').textContent='✓ Foto adjunta · captura monto y comercio'}};
 $('#pForm').onsubmit=async ev=>{ev.preventDefault();const fd=new FormData(ev.target);if(!fd.get('foto')||!fd.get('foto').size)fd.delete('foto');
-  try{await api('/api/pagos/manual',{method:'POST',body:fd});ev.target.reset();ev.target.classList.add('hidden');setStatus('Pago registrado. La app avisará cuando llegue su factura.');await cargarPagos()}catch(e){setStatus(e.message)}};
+  if(!fd.get('notas'))fd.set('notas','');const msg=$('#fMsg');
+  if(fd.get('forma')==='efectivo'&&+fd.get('monto')>2000){msg.style.color='var(--red)';msg.textContent='Ojo: pagos en efectivo de más de $2,000 no son deducibles. Se guarda, pero queda marcado.'}
+  try{await api('/api/pagos/manual',{method:'POST',body:fd});LS.set('ff',fd.get('forma'));LS.set('fc',fd.get('cuenta'));
+    msg.style.color='var(--green)';msg.textContent=`Guardado: ${fmt2(+fd.get('monto'))} en ${fd.get('proveedor')}. Pídele la factura; te aviso si no llega antes de fin de mes.`;
+    resetReg();await cargarPagos()}catch(e){msg.style.color='var(--red)';msg.textContent=e.message}};
 
 /* ---------- eventos ---------- */
 const drop=$('#drop'),file=$('#file');
