@@ -67,7 +67,7 @@ DUENOS = {
     ).split(",")
     if e.strip()
 }
-CONTADOR_EMAILS_ENV = {e.strip().lower() for e in os.environ.get("CONTADOR_EMAILS", "").split(",") if e.strip()}
+CONTADOR_EMAILS_ENV = {e.strip().lower() for e in os.environ.get("CONTADOR_EMAILS", "ripollgarcia.g@gmail.com").split(",") if e.strip()}
 HIST_ANIOS = int(os.environ.get("HISTORICO_ANIOS", "5"))  # años previos a bajar del SAT
 ALLOWED_ORIGINS = [
     o.strip()
