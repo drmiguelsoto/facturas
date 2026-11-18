@@ -14,6 +14,7 @@ import base64
 import datetime as dt
 import io
 import json
+import re
 import logging
 import os
 import sqlite3
@@ -58,6 +59,16 @@ ALLOWED_EMAILS = {
     ).split(",")
     if e.strip()
 }
+# Dueños: administran accesos. Contadores: sólo lectura de facturas y análisis fiscal.
+DUENOS = {
+    e.strip().lower()
+    for e in os.environ.get(
+        "DUENOS", "miguelitosotomd@gmail.com,miguelsotomd@gmail.com,miguelsotouniverse@gmail.com"
+    ).split(",")
+    if e.strip()
+}
+CONTADOR_EMAILS_ENV = {e.strip().lower() for e in os.environ.get("CONTADOR_EMAILS", "").split(",") if e.strip()}
+HIST_ANIOS = int(os.environ.get("HISTORICO_ANIOS", "5"))  # años previos a bajar del SAT
 ALLOWED_ORIGINS = [
     o.strip()
     for o in os.environ.get(
@@ -431,6 +442,18 @@ def ciclo(forzar_diario=False):
                 crear_solicitud(fiel, rfc, d, "Metadata", inicio_meta, ahora - dt.timedelta(minutes=5), token)
             kv_set(f"diario:{rfc}", hoy)
 
+        # 2b) Histórico: años anteriores, uno por ciclo (para revisar facturas del pasado)
+        else:
+            for anio in range(ahora.year - 1, ahora.year - 1 - HIST_ANIOS, -1):
+                if kv_get(f"historico:{rfc}:{anio}"):
+                    continue
+                evento(f"Pidiendo al SAT el histórico {anio}.")
+                if solicitar_rango(fiel, rfc, dt.datetime(anio, 1, 1), dt.datetime(anio, 12, 31, 23, 59, 59)):
+                    kv_set(f"historico:{rfc}:{anio}", hoy)
+                else:
+                    evento(f"El SAT no aceptó el histórico {anio}; se reintenta luego.", "warn")
+                break
+
         # 3) Revisar y bajar lo que el SAT ya tenga listo
         if verificar_pendientes(fiel, rfc):
             kv_set("ultima_descarga", now_iso())
@@ -458,6 +481,20 @@ app.add_middleware(
 _g_req = g_requests.Request()
 
 
+def contadores():
+    return CONTADOR_EMAILS_ENV | {e.lower() for e in (kv_get("contadores", []) or [])}
+
+
+def rol_de(email):
+    if email in DUENOS:
+        return "dueno"
+    if email in ALLOWED_EMAILS:
+        return "equipo"
+    if email in contadores():
+        return "contador"
+    return None
+
+
 def usuario(request: Request):
     h = request.headers.get("Authorization", "")
     if not h.startswith("Bearer "):
@@ -467,8 +504,21 @@ def usuario(request: Request):
     except Exception:
         raise HTTPException(401, "Sesión vencida. Vuelve a iniciar sesión.")
     email = (info.get("email") or "").lower()
-    if not info.get("email_verified") or email not in ALLOWED_EMAILS:
+    if not info.get("email_verified") or not rol_de(email):
         raise HTTPException(403, f"{email} no tiene acceso a esta app.")
+    return email
+
+
+def equipo(email=Depends(usuario)):
+    """Todo lo que modifica datos, toca la e.firma o ve pagos: no para contadores."""
+    if rol_de(email) == "contador":
+        raise HTTPException(403, "Tu acceso es de sólo consulta.")
+    return email
+
+
+def dueno(email=Depends(usuario)):
+    if rol_de(email) != "dueno":
+        raise HTTPException(403, "Sólo el Dr. Soto administra los accesos.")
     return email
 
 
@@ -485,6 +535,12 @@ def config():
 @app.get("/api/status")
 def status(email=Depends(usuario)):
     _, info = cargar_fiel()
+    rol = rol_de(email)
+    if rol == "contador":
+        with db() as c:
+            n = c.execute("SELECT COUNT(*) n FROM cfdi").fetchone()["n"]
+        return {"usuario": email, "rol": rol, "fiel": {"rfc": info["rfc"]} if info else None, "cfdi": n,
+                "ultima_descarga": kv_get("ultima_descarga"), "pendientes": 0, "eventos": [], "solicitudes": []}
     with db() as c:
         n = c.execute("SELECT COUNT(*) n FROM cfdi").fetchone()["n"]
         sol = [dict(r) for r in c.execute("SELECT direccion,tipo,desde,hasta,estado,numero,mensaje,actualizado FROM solicitudes ORDER BY creado DESC LIMIT 30")]
@@ -494,10 +550,35 @@ def status(email=Depends(usuario)):
     if info:
         vence_en = (dt.date.fromisoformat(info["vence"]) - dt.datetime.now(TZ).date()).days
     return {
-        "usuario": email, "fiel": info, "fiel_vence_en_dias": vence_en, "cfdi": n, "pendientes": pend,
+        "usuario": email, "rol": rol, "fiel": info, "fiel_vence_en_dias": vence_en, "cfdi": n, "pendientes": pend,
         "ultima_descarga": kv_get("ultima_descarga"), "ultimo_diario": kv_get(f"diario:{info['rfc']}") if info else None,
         "solicitudes": sol, "eventos": ev, "hora_sync": SYNC_HOUR,
     }
+
+
+@app.get("/api/accesos")
+def ver_accesos(email=Depends(dueno)):
+    return {"contadores": sorted(contadores()), "fijos": sorted(CONTADOR_EMAILS_ENV),
+            "equipo": sorted(ALLOWED_EMAILS - DUENOS), "duenos": sorted(DUENOS)}
+
+
+@app.post("/api/accesos")
+def agregar_contador(correo: str = Form(...), email=Depends(dueno)):
+    c = correo.strip().lower()
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", c):
+        raise HTTPException(400, "Correo no válido.")
+    lst = sorted(set(kv_get("contadores", []) or []) | {c})
+    kv_set("contadores", lst)
+    evento(f"{email} dio acceso de contador a {c}.")
+    return ver_accesos(email)
+
+
+@app.delete("/api/accesos")
+def quitar_contador(correo: str, email=Depends(dueno)):
+    c = correo.strip().lower()
+    kv_set("contadores", [x for x in (kv_get("contadores", []) or []) if x != c])
+    evento(f"{email} quitó el acceso de contador a {c}.")
+    return ver_accesos(email)
 
 
 @app.get("/api/cfdi")
@@ -525,7 +606,7 @@ def xml(uuid: str, email=Depends(usuario)):
 
 
 @app.post("/api/upload")
-async def upload(files: list[UploadFile] = File(...), email=Depends(usuario)):
+async def upload(files: list[UploadFile] = File(...), email=Depends(equipo)):
     _, info = cargar_fiel()
     rfc = info["rfc"] if info else ""
     tot = [0, 0, 0]
@@ -545,7 +626,7 @@ async def upload(files: list[UploadFile] = File(...), email=Depends(usuario)):
 
 @app.post("/api/fiel")
 async def subir_fiel(cer: UploadFile = File(...), key: UploadFile = File(...), password: str = Form(...),
-                     email=Depends(usuario)):
+                     email=Depends(dueno)):
     cer_der, key_der = await cer.read(), await key.read()
     try:
         info = fiel_info_de_cer(cer_der)
@@ -574,7 +655,7 @@ async def subir_fiel(cer: UploadFile = File(...), key: UploadFile = File(...), p
 
 
 @app.delete("/api/fiel")
-def borrar_fiel(email=Depends(usuario)):
+def borrar_fiel(email=Depends(dueno)):
     if os.path.exists(FIEL_PATH):
         os.remove(FIEL_PATH)
     evento(f"{email} borró la e.firma del servidor.", "warn")
@@ -582,7 +663,7 @@ def borrar_fiel(email=Depends(usuario)):
 
 
 @app.post("/api/sync")
-def sync_ahora(email=Depends(usuario)):
+def sync_ahora(email=Depends(equipo)):
     fiel, _ = cargar_fiel()
     if not fiel:
         raise HTTPException(400, "Primero carga la e.firma.")
@@ -754,7 +835,7 @@ def re_uso_ok(uso):
 
 
 @app.post("/api/verificar")
-async def verificar(files: list[UploadFile] = File(...), email=Depends(usuario)):
+async def verificar(files: list[UploadFile] = File(...), email=Depends(equipo)):
     _, info = cargar_fiel()
     rfc = info["rfc"] if info else ""
     res = []
@@ -1059,7 +1140,7 @@ def ciclo(forzar_diario=False):  # noqa: F811
 
 # ---------------------------------------------------------------- API pagos
 @app.get("/api/pagos")
-def api_pagos(email=Depends(usuario)):
+def api_pagos(email=Depends(equipo)):
     _, info = cargar_fiel()
     rfc_mio = info["rfc"] if info else "SOMM790130NHA"
     rfcs69, _ = lista_69b()
@@ -1100,7 +1181,7 @@ def api_pagos(email=Depends(usuario)):
 
 @app.post("/api/pagos/importar")
 async def importar_pagos(files: list[UploadFile] = File(...), cuenta: str = Form(...), tipo: str = Form("debito"),
-                         email=Depends(usuario)):
+                         email=Depends(equipo)):
     forma = {"credito": "tarjeta_credito", "debito": "transferencia"}.get(tipo, "transferencia")
     tot_mov = tot_new = 0
     for f in files:
@@ -1123,7 +1204,7 @@ Monto = el TOTAL pagado. Si un dato no aparece, déjalo vacío. No inventes."""
 
 
 @app.post("/api/pagos/leer-ticket")
-async def leer_ticket(foto: UploadFile = File(...), email=Depends(usuario)):
+async def leer_ticket(foto: UploadFile = File(...), email=Depends(equipo)):
     """Lee la foto del voucher con IA para pre-llenar el pago. El usuario confirma antes de guardar."""
     if not GEMINI_API_KEY:
         return {"ok": False, "motivo": "sin_llave"}
@@ -1150,7 +1231,7 @@ async def leer_ticket(foto: UploadFile = File(...), email=Depends(usuario)):
 @app.post("/api/pagos/manual")
 async def pago_manual(fecha: str = Form(...), monto: float = Form(...), proveedor: str = Form(...),
                       cuenta: str = Form(...), forma: str = Form("transferencia"), notas: str = Form(""),
-                      rfc: str = Form(""), foto: UploadFile | None = File(None), email=Depends(usuario)):
+                      rfc: str = Form(""), foto: UploadFile | None = File(None), email=Depends(equipo)):
     if forma == "efectivo" and monto > 2000:
         notas = (notas + " · ").lstrip(" · ") + "OJO: efectivo > $2,000 no es deducible"
     item = {"fecha": _fecha(fecha) or fecha, "monto": round(monto, 2), "descripcion": proveedor, "proveedor": proveedor,
@@ -1172,7 +1253,7 @@ async def pago_manual(fecha: str = Form(...), monto: float = Form(...), proveedo
 
 @app.post("/api/pagos/{pid}/clasificar")
 async def clasificar(pid: int, accion: str = Form(...), siempre: bool = Form(False), patron: str = Form(""),
-                     proveedor: str = Form(""), email=Depends(usuario)):
+                     proveedor: str = Form(""), email=Depends(equipo)):
     if accion not in ("requiere", "personal", "ignorar", "clasificar"):
         raise HTTPException(400, "Acción inválida")
     with db() as c:
@@ -1195,7 +1276,7 @@ async def clasificar(pid: int, accion: str = Form(...), siempre: bool = Form(Fal
 
 
 @app.post("/api/pagos/{pid}/vincular")
-async def vincular(pid: int, uuid: str = Form(""), email=Depends(usuario)):
+async def vincular(pid: int, uuid: str = Form(""), email=Depends(equipo)):
     with db() as c:
         if uuid:
             d = c.execute("SELECT data FROM cfdi WHERE uuid=?", (uuid.upper(),)).fetchone()
@@ -1210,7 +1291,7 @@ async def vincular(pid: int, uuid: str = Form(""), email=Depends(usuario)):
 
 
 @app.get("/api/pagos/{pid}/foto")
-def foto_pago(pid: int, email=Depends(usuario)):
+def foto_pago(pid: int, email=Depends(equipo)):
     with db() as c:
         r = c.execute("SELECT foto FROM pagos WHERE id=?", (pid,)).fetchone()
     if not r or not r["foto"]:

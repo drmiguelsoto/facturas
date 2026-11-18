@@ -24,6 +24,10 @@
 html,body{margin:0;padding:0}
 body{font-family:var(--sans);background:var(--crema);color:var(--negro);font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased}
 .hidden{display:none!important}
+body.rolContador .soloEquipo{display:none!important}
+.csv{float:right;padding:4px 10px;font-size:12px;margin-left:8px}
+.acc{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0}.acc input{flex:1;min-width:220px}
+.chip{display:inline-flex;gap:8px;align-items:center;border:1px solid var(--linea);border-radius:3px;padding:4px 8px;font-size:13px;margin:3px 6px 3px 0}.chip button{border:0;background:none;color:var(--rojo);cursor:pointer;font-size:14px}
 a{color:var(--negro)}
 
 /* ---------- entrada ---------- */
@@ -221,7 +225,7 @@ footer{color:var(--taupe);font-size:11.5px;text-align:center;padding:24px;line-h
   </div>
 
   <div id="app" class="hidden">
-    <div class="fiel hidden" id="fielCard">
+    <div class="fiel hidden soloEquipo" id="fielCard">
       <h3>Conecta tu e.firma para descargar automáticamente</h3>
       <p>Se usa solo para que tu servidor se autentique con el SAT y descargue tus facturas cada madrugada. Se guarda cifrada en tu servidor; no firma ni cancela nada. Escribe la contraseña tú mismo.</p>
       <div class="row">
@@ -233,8 +237,19 @@ footer{color:var(--taupe);font-size:11.5px;text-align:center;padding:24px;line-h
       <div class="msg" id="fMsg"></div>
     </div>
 
+    <div class="card hidden" id="contaNota">
+      <h3>Vista de contador — sólo consulta</h3>
+      <p class="sub" style="margin:0">Facturas emitidas y recibidas descargadas directo del SAT cada madrugada (vigentes y canceladas). Cambia de año arriba a la derecha. Cada tabla se puede bajar en CSV (abre en Excel).</p>
+    </div>
+    <div class="card hidden" id="accCard">
+      <h3>Accesos de contador</h3>
+      <p class="sub">Ven ingresos contra egresos, fugas, proveedores a corregir, PPD y todas las facturas de todos los años. No ven pagos, vouchers, la e.firma ni pueden cambiar nada.</p>
+      <div id="accLista"></div>
+      <div class="acc"><input type="email" id="accMail" placeholder="correo de Gmail o Google del contador"><button class="btn" id="accAdd">Dar acceso</button></div>
+      <div class="msg" id="accMsg"></div>
+    </div>
     <div class="syncbar hidden" id="syncbar"></div>
-    <details class="manual" id="manual">
+    <details class="manual soloEquipo" id="manual">
       <summary>Cargar XML o ZIP a mano (opcional)</summary>
       <div class="drop" id="drop" style="margin-top:10px">
         <h2>Suelta aquí ZIP o XML</h2>
@@ -247,9 +262,9 @@ footer{color:var(--taupe);font-size:11.5px;text-align:center;padding:24px;line-h
   <section id="dash" class="hidden">
 
     <div class="tabs" id="tabs">
-      <button class="tab on" data-p="mes">Tablero del mes</button>
-      <button class="tab" data-p="verificar">Verificar antes de pagar</button>
-      <button class="tab" data-p="pagos">Pagos sin factura <span class="n" id="nPagos">0</span></button>
+      <button class="tab on soloEquipo" data-p="mes">Tablero del mes</button>
+      <button class="tab soloEquipo" data-p="verificar">Verificar antes de pagar</button>
+      <button class="tab soloEquipo" data-p="pagos">Pagos sin factura <span class="n" id="nPagos">0</span></button>
       <button class="tab" data-p="resumen">Resumen mensual</button>
       <button class="tab" data-p="fugas">Fugas <span class="n" id="nFugas">0</span></button>
       <button class="tab" data-p="prov">Proveedores a corregir</button>
@@ -318,7 +333,12 @@ footer{color:var(--taupe);font-size:11.5px;text-align:center;padding:24px;line-h
         <div id="chart"></div>
       </div>
       <div class="card">
-        <h3>Detalle por mes</h3>
+        <h3>Comparativo por año <button class="btn line csv" data-csv="anual">CSV</button></h3>
+        <p class="sub">Todos los años descargados del SAT. Sirve para ver de un vistazo cuánto del gasto de años pasados no deduce.</p>
+        <div class="tablewrap"><table id="tAnual"></table></div>
+      </div>
+      <div class="card">
+        <h3>Detalle por mes <button class="btn line csv" data-csv="mes">CSV</button></h3>
         <div class="tablewrap"><table id="tMes"></table></div>
         <p class="note">Ingresos por fecha de emisión. Para ISR de persona física cuenta la fecha de cobro: las facturas PPD emitidas se acumulan cuando se recibe el pago (ver “Cobros PPD pendientes”).</p>
       </div>
@@ -330,6 +350,7 @@ footer{color:var(--taupe);font-size:11.5px;text-align:center;padding:24px;line-h
         <div class="toolbar">
           <select id="fFiltro"></select>
           <input type="search" id="fBuscar" placeholder="Buscar proveedor, RFC o folio fiscal">
+          <button class="btn line" data-csv="fugas">CSV</button>
         </div>
         <div class="tablewrap"><table id="tFugas"></table></div>
       </div>
@@ -337,7 +358,7 @@ footer{color:var(--taupe);font-size:11.5px;text-align:center;padding:24px;line-h
 
     <div class="panel" id="p-prov">
       <div class="card">
-        <h3>A quién pedirle corrección</h3>
+        <h3>A quién pedirle corrección <button class="btn line csv" data-csv="prov">CSV</button></h3>
         <p class="sub">Proveedores con facturas que hoy no te sirven como deducción, agrupados. Pídeles refacturar a régimen 612 con uso G03 (o el complemento de pago, si es PPD).</p>
         <div class="tablewrap"><table id="tProv"></table></div>
       </div>
@@ -345,7 +366,7 @@ footer{color:var(--taupe);font-size:11.5px;text-align:center;padding:24px;line-h
 
     <div class="panel" id="p-cobros">
       <div class="card">
-        <h3>Facturas emitidas en PPD sin complemento de pago</h3>
+        <h3>Facturas emitidas en PPD sin complemento de pago <button class="btn line csv" data-csv="cobros">CSV</button></h3>
         <p class="sub">Si ya cobraste, falta timbrar el complemento de pago. Si no, son cuentas por cobrar.</p>
         <div class="tablewrap"><table id="tCobros"></table></div>
       </div>
@@ -358,6 +379,7 @@ footer{color:var(--taupe);font-size:11.5px;text-align:center;padding:24px;line-h
           <select id="aTipo"><option value="">Todos los tipos</option><option value="I">Ingreso (I)</option><option value="E">Nota de crédito (E)</option><option value="P">Complemento de pago (P)</option><option value="N">Nómina (N)</option><option value="X">Canceladas</option></select>
           <select id="aMes"></select>
           <input type="search" id="aBuscar" placeholder="Buscar nombre, RFC, folio fiscal o concepto">
+          <button class="btn line" data-csv="todas">CSV</button>
         </div>
         <div class="tablewrap"><table id="tTodas"></table></div>
         <p class="note" id="aCount"></p>
@@ -390,7 +412,7 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 /* ---------- servidor ---------- */
 const API='https://facturas-production-0558.up.railway.app';
 const CLIENT_ID='634352012698-b47t3ed3tvd4d1g7l30l68bd6e5s0ri4.apps.googleusercontent.com';
-let ID_TOKEN=null,STATUS=null;
+let ID_TOKEN=null,STATUS=null,ROL='equipo';
 function decodeJWT(t){try{return JSON.parse(decodeURIComponent(escape(atob(t.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')))))}catch(e){return null}}
 async function api(path,opts={}){
   const r=await fetch(API+path,{...opts,headers:{...(opts.headers||{}),Authorization:'Bearer '+ID_TOKEN},cache:'no-store'});
@@ -414,13 +436,17 @@ async function onLogin(tok){
 async function cargar(){
   setStatus('Cargando…');
   const [st,list]=await Promise.all([api('/api/status'),api('/api/cfdi')]);
-  STATUS=st;DATA=list;
+  STATUS=st;DATA=list;ROL=st.rol||'equipo';
+  document.body.classList.toggle('rolContador',ROL==='contador');
+  $('#contaNota').classList.toggle('hidden',ROL!=='contador');
+  if(ROL==='contador'){const b=document.querySelector('.tab[data-p="resumen"]');if(b&&!document.querySelector('.tab.on:not(.soloEquipo)'))b.click()}
   document.body.classList.remove('enGate');$('#gate').classList.add('hidden');$('#app').classList.remove('hidden');$('#btnSalir').classList.remove('hidden');
-  renderSync();refreshSelectors();render();setStatus('');cargarPagos();
+  renderSync();refreshSelectors();render();setStatus('');if(ROL!=='contador')cargarPagos();
 }
 function cuando(iso){if(!iso)return 'nunca';const d=new Date(iso);return d.toLocaleString('es-MX',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}
 function renderSync(){
-  const s=STATUS;$('#fielCard').classList.toggle('hidden',!!s.fiel);
+  const s=STATUS;$('#fielCard').classList.toggle('hidden',!!s.fiel||ROL!=='dueno');
+  if(ROL==='contador'){const bar=$('#syncbar');bar.classList.remove('hidden');bar.innerHTML=`<span><span class="dot"></span><b>${s.cfdi} facturas del SAT</b></span><span class="opt">Última descarga: ${cuando(s.ultima_descarga)}</span><span class="sp"></span><span class="opt">${esc(s.usuario)}</span>`;return}
   const bar=$('#syncbar');bar.classList.remove('hidden');
   if(!s.fiel){bar.innerHTML=`<span><span class="dot red"></span>Sin e.firma: la descarga automática está apagada.</span><span class="sp"></span><span>${s.cfdi} facturas en tu servidor</span>`;return}
   const venc=s.fiel_vence_en_dias,dot=s.pendientes?'amb':(venc<45?'red':'');
@@ -428,9 +454,10 @@ function renderSync(){
     <span class="opt">Última: ${cuando(s.ultima_descarga)}</span>
     <span class="opt">${s.pendientes?`${s.pendientes} solicitudes en proceso`:'Al día'}</span>
     <span class="opt">e.firma vence ${s.fiel.vence}${venc<45?' — <b style="color:var(--red)">renuévala pronto</b>':''}</span>
-    <span class="sp"></span><button class="btn line" id="bLog">Bitácora</button><button class="btn" id="bSync">Sincronizar ahora</button>
+    <span class="sp"></span>${ROL==='dueno'?'<button class="btn line" id="bAcc">Accesos</button>':''}<button class="btn line" id="bLog">Bitácora</button><button class="btn" id="bSync">Sincronizar ahora</button>
     <div class="log hidden" id="log" style="flex-basis:100%">${s.eventos.map(e=>`<div>${cuando(e.fecha)} · ${esc(e.mensaje)}</div>`).join('')}</div>`;
   $('#bLog').onclick=()=>$('#log').classList.toggle('hidden');
+  if($('#bAcc'))$('#bAcc').onclick=()=>{const c=$('#accCard');c.classList.toggle('hidden');if(!c.classList.contains('hidden'))cargarAccesos()};
   $('#bSync').onclick=async()=>{try{const r=await api('/api/sync',{method:'POST'});setStatus(r.mensaje);setTimeout(()=>cargar().catch(()=>{}),4000)}catch(e){setStatus(e.message)}};
 }
 async function conectarFiel(){
@@ -441,6 +468,50 @@ async function conectarFiel(){
   try{const r=await api('/api/fiel',{method:'POST',body:fd});$('#fPwd').value='';msg.style.color='var(--green)';
     msg.textContent=`Listo: e.firma de ${r.fiel.rfc} conectada (vence ${r.fiel.vence}). Ya pedí al SAT tus facturas del año; llegan en minutos u horas.`;setTimeout(()=>cargar().catch(()=>{}),2500)}
   catch(e){msg.style.color='var(--red)';msg.textContent=e.message}finally{$('#fGo').disabled=false}
+}
+
+/* ---------- accesos (sólo dueño) ---------- */
+function pintarAccesos(r){
+  $('#accLista').innerHTML=r.contadores.length?r.contadores.map(c=>`<span class="chip">${esc(c)}${r.fijos.includes(c)?'':`<button title="Quitar acceso" data-q="${esc(c)}">✕</button>`}</span>`).join(''):'<span class="note">Todavía no hay contadores con acceso.</span>';
+  document.querySelectorAll('#accLista [data-q]').forEach(b=>b.onclick=async()=>{try{pintarAccesos(await api('/api/accesos?correo='+encodeURIComponent(b.dataset.q),{method:'DELETE'}))}catch(e){$('#accMsg').textContent=e.message}});
+}
+async function cargarAccesos(){try{pintarAccesos(await api('/api/accesos'))}catch(e){$('#accMsg').textContent=e.message}}
+async function agregarAcceso(){
+  const m=$('#accMail').value.trim();if(!m)return;const fd=new FormData();fd.append('correo',m);
+  try{pintarAccesos(await api('/api/accesos',{method:'POST',body:fd}));$('#accMail').value='';$('#accMsg').style.color='var(--green)';$('#accMsg').textContent=`Listo: ${m} ya puede entrar a facturas.miguelsotomd.com con esa cuenta de Google.`}
+  catch(e){$('#accMsg').style.color='var(--red)';$('#accMsg').textContent=e.message}
+}
+
+/* ---------- comparativo anual ---------- */
+let ANUAL=[];
+function calcAnual(){
+  const sv=S.year,years=[...new Set(DATA.map(x=>x.fecha.slice(0,4)))].sort();
+  ANUAL=years.map(y=>{S.year=y;const a=analyze();const t=a.mes.reduce((s,m)=>({ing:s.ing+m.ing,ded:s.ded+m.ded,leak:s.leak+m.leak,pers:s.pers+m.pers}),{ing:0,ded:0,leak:0,pers:0});
+    return {y,...t,nLeak:a.gastos.filter(x=>x.fugas.length).length,nGas:a.gastos.length,nIng:a.ingresos.length,canc:a.canceladas.length,ppd:a.cobros.length}}).filter(r=>r.nGas||r.nIng);
+  S.year=sv;
+}
+function renderAnual(){
+  calcAnual();
+  $('#tAnual').innerHTML=`<thead><tr><th>Año</th><th class="num">Ingresos</th><th class="num">Gastos deducibles</th><th class="num">Con fuga</th><th class="num">Facturas con fuga</th><th class="num">% del gasto con fuga</th><th class="num">PPD sin complemento</th><th class="num">Canceladas</th></tr></thead><tbody>${ANUAL.map(r=>{const tot=r.ded+r.leak;return `<tr${r.y===S.year?' style="background:var(--crema)"':''}><td><b>${r.y}</b></td><td class="num">${fmt(r.ing)}</td><td class="num">${fmt(r.ded)}</td><td class="num" style="color:var(--red)">${r.leak?fmt(r.leak):'—'}</td><td class="num">${r.nLeak} de ${r.nGas}</td><td class="num">${tot?Math.round(r.leak/tot*100)+'%':'—'}</td><td class="num">${r.ppd||'—'}</td><td class="num">${r.canc||'—'}</td></tr>`}).join('')}</tbody>`;
+}
+
+/* ---------- exportar CSV (abre en Excel) ---------- */
+function bajarCSV(nombre,cab,filas){
+  const q=v=>{v=v==null?'':String(v);return /[",\n;]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v};
+  const txt='\ufeff'+[cab,...filas].map(f=>f.map(q).join(',')).join('\r\n');
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([txt],{type:'text/csv;charset=utf-8'}));a.download=`${nombre}_${S.rfc}_${S.year}.csv`;document.body.appendChild(a);a.click();a.remove();
+}
+const r2=v=>Math.round(v*100)/100;
+function exportar(k){
+  const fl=x=>x.fugas.map(f=>FUGAS[f].l).join(' | ');
+  if(k==='anual')return bajarCSV('comparativo_anual',['Año','Ingresos','Gastos deducibles','Con fuga','Facturas con fuga','Facturas de gasto','PPD sin complemento','Canceladas'],ANUAL.map(r=>[r.y,r2(r.ing),r2(r.ded),r2(r.leak),r.nLeak,r.nGas,r.ppd,r.canc]));
+  if(k==='mes')return bajarCSV('resumen_mensual',['Mes','Ingresos','Gastos deducibles','Con fuga','Notas de crédito','Deducciones personales'],A.mes.map((m,i)=>[MESES[i],r2(m.ing),r2(m.ded),r2(m.leak),r2(m.nc),r2(m.pers)]));
+  if(k==='fugas'){const f=$('#fFiltro').value;return bajarCSV('fugas',['Fecha','RFC proveedor','Proveedor','UUID','Concepto','Motivo','Uso','Régimen receptor','Forma','Método','Base','Total'],A.gastos.filter(x=>x.fugas.length&&(!f||x.fugas.includes(f))).map(x=>[x.fecha,x.emRfc,x.emNom,x.uuid,x.conceptos,fl(x),x.uso,x.rcReg,FORMA[x.forma]||x.forma,x.metodo,r2(x.base),r2(x.total)]))}
+  if(k==='prov'){const g={};A.gastos.filter(x=>x.fugas.length).forEach(x=>{const r=g[x.emRfc]=g[x.emRfc]||{rfc:x.emRfc,nom:x.emNom,n:0,m:0,f:new Set()};r.n++;r.m+=x.base;x.fugas.forEach(f=>r.f.add(FUGAS[f].l))});
+    return bajarCSV('proveedores_a_corregir',['RFC','Proveedor','Facturas','Base afectada','Motivos'],Object.values(g).sort((a,b)=>b.m-a.m).map(r=>[r.rfc,r.nom,r.n,r2(r.m),[...r.f].join(' | ')]))}
+  if(k==='cobros')return bajarCSV('ppd_sin_complemento',['Fecha','RFC cliente','Cliente','Serie/folio','UUID','Total'],A.cobros.map(x=>[x.fecha,x.rcRfc,x.rcNom,x.serie+x.folio,x.uuid,r2(x.total)]));
+  if(k==='todas'){const gx={};A.gastos.forEach(x=>gx[x.uuid]=x);
+    return bajarCSV('facturas',['Fecha','Dirección','Tipo','Método','Forma','RFC emisor','Emisor','RFC receptor','Receptor','UUID','Uso','Régimen receptor','Estado','Fugas','Subtotal','Descuento','Total','Concepto'],A.yrData.concat(A.canceladas).sort((a,b)=>a.fecha<b.fecha?-1:1).map(x=>{const g=gx[x.uuid];return [x.fecha,x.rcRfc===S.rfc?'Recibida':'Emitida',x.tipo,x.metodo,FORMA[x.forma]||x.forma,x.emRfc,x.emNom,x.rcRfc,x.rcNom,x.uuid,x.uso,x.rcReg,x.estatus==='Cancelado'?'Cancelada':'Vigente',g?fl(g):'',r2(x.subtotal),r2(x.descuento),r2(x.total),x.conceptos]}))}
 }
 
 /* ---------- lectura de CFDI ---------- */
@@ -545,7 +616,7 @@ function render(){
     <div class="kpi alert"><div class="l">Gastos con fuga</div><div class="v">${fmt(t.leak)}</div><div class="s">${nLeak} facturas que hoy no deducen</div></div>
     <div class="kpi"><div class="l">Brecha ingreso − gasto</div><div class="v">${fmt(t.ing-t.ded)}</div><div class="s">${t.pers?`+ ${fmt(t.pers)} en deducciones personales`:'Base gravable aproximada'}</div></div>`;
   $('#nFugas').textContent=nLeak;
-  renderChart();renderMes();renderLeaks();renderFugas();renderProv();renderCobros();renderTodas();renderTablero();
+  renderChart();renderAnual();renderMes();renderLeaks();renderFugas();renderProv();renderCobros();renderTodas();renderTablero();
 }
 function renderChart(){
   const W=1100,H=300,pl=70,pb=28,pt=12,cw=(W-pl-10)/12;
@@ -755,6 +826,8 @@ file.onchange=()=>{if(file.files.length)ingest([...file.files]);file.value=''};
 ['dragleave','drop'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.remove('over')}));
 drop.addEventListener('drop',ev=>ingest([...ev.dataTransfer.files]));
 $('#fGo').onclick=conectarFiel;
+$('#accAdd').onclick=agregarAcceso;$('#accMail').onkeydown=e=>{if(e.key==='Enter')agregarAcceso()};
+document.querySelectorAll('[data-csv]').forEach(b=>b.onclick=()=>exportar(b.dataset.csv));
 $('#btnSalir').onclick=()=>{try{google.accounts.id.disableAutoSelect();sessionStorage.removeItem('ft')}catch(e){};location.reload()};
 $('#rfcSel').onchange=e=>{S.rfc=e.target.value;render()};
 $('#yearSel').onchange=e=>{S.year=e.target.value;render()};
