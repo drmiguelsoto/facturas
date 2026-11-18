@@ -67,7 +67,7 @@ DUENOS = {
     ).split(",")
     if e.strip()
 }
-CONTADOR_EMAILS_ENV = {e.strip().lower() for e in os.environ.get("CONTADOR_EMAILS", "ripollgarcia.g@gmail.com").split(",") if e.strip()}
+CONTADOR_EMAILS_ENV = {e.strip().lower() for e in os.environ.get("CONTADOR_EMAILS", "").split(",") if e.strip()}
 HIST_ANIOS = int(os.environ.get("HISTORICO_ANIOS", "5"))  # años previos a bajar del SAT
 ALLOWED_ORIGINS = [
     o.strip()
@@ -483,6 +483,16 @@ _g_req = g_requests.Request()
 
 def contadores():
     return CONTADOR_EMAILS_ENV | {e.lower() for e in (kv_get("contadores", []) or [])}
+
+
+def _sembrar_contadores():
+    # Alta inicial de Ripoll en la lista editable (una sola vez), para que se pueda quitar desde "Accesos".
+    if not kv_get("semilla:ripoll"):
+        kv_set("contadores", sorted(set(kv_get("contadores", []) or []) | {"ripollgarcia.g@gmail.com"}))
+        kv_set("semilla:ripoll", True)
+
+
+_sembrar_contadores()
 
 
 def rol_de(email):
